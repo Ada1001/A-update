@@ -1,0 +1,112 @@
+# TSMNet Experiment Commands
+
+This file lists the full commands for running TSMNet experiments on STEW, EEGMAT, and COG-BCI.
+
+Before formal training, inspect the split once to confirm the cached dataset, sampling rate, subject scope, and train/validation/test counts are correct.
+
+## Split Inspection
+
+```powershell
+python inspect_datasets.py --dataset stew --protocol loso --cache outputs/cache/stew_all_128hz_1s.npz
+```
+
+```powershell
+python inspect_datasets.py --dataset eegmat --protocol single_session --cache outputs/cache/eegmat_all_250hz_1s.npz --target-fs 250
+```
+
+```powershell
+python inspect_datasets.py --dataset cog-bci --cog-paradigm nback --protocol cog_multi_session --cache outputs/cache/cog_nback_all_250hz_1s.npz --target-fs 250
+```
+
+```powershell
+python inspect_datasets.py --dataset cog-bci --cog-paradigm matb --protocol cog_multi_session --cache outputs/cache/cog_matb_all_250hz_1s.npz --target-fs 250
+```
+
+## STEW
+
+Single-subject single-session:
+
+```powershell
+python run_experiment.py --dataset stew --protocol single_session --cache outputs/cache/stew_all_128hz_1s.npz --output outputs/tsmnet --epochs 30 --batch-size 64
+```
+
+Leave-one-subject-out:
+
+```powershell
+python run_experiment.py --dataset stew --protocol loso --cache outputs/cache/stew_all_128hz_1s.npz --output outputs/tsmnet --epochs 30 --batch-size 64
+```
+
+## EEGMAT
+
+Single-subject single-session:
+
+```powershell
+python run_experiment.py --dataset eegmat --protocol single_session --cache outputs/cache/eegmat_all_250hz_1s.npz --target-fs 250 --output outputs/tsmnet --epochs 30 --batch-size 64
+```
+
+Leave-one-subject-out:
+
+```powershell
+python run_experiment.py --dataset eegmat --protocol loso --cache outputs/cache/eegmat_all_250hz_1s.npz --target-fs 250 --output outputs/tsmnet --epochs 30 --batch-size 64
+```
+
+## COG-BCI N-Back
+
+Single-subject single-session, session 1 only:
+
+```powershell
+python run_experiment.py --dataset cog-bci --cog-paradigm nback --protocol single_session --cache outputs/cache/cog_nback_all_250hz_1s.npz --target-fs 250 --output outputs/tsmnet --epochs 30 --batch-size 64
+```
+
+Single-subject multi-session, sessions 1 and 2 as source and session 3 as target:
+
+```powershell
+python run_experiment.py --dataset cog-bci --cog-paradigm nback --protocol cog_multi_session --cache outputs/cache/cog_nback_all_250hz_1s.npz --target-fs 250 --output outputs/tsmnet --epochs 30 --batch-size 64
+```
+
+Leave-one-subject-out:
+
+```powershell
+python run_experiment.py --dataset cog-bci --cog-paradigm nback --protocol loso --cache outputs/cache/cog_nback_all_250hz_1s.npz --target-fs 250 --output outputs/tsmnet --epochs 30 --batch-size 64
+```
+
+## COG-BCI MAT-B
+
+Single-subject single-session, session 1 only:
+
+```powershell
+python run_experiment.py --dataset cog-bci --cog-paradigm matb --protocol single_session --cache outputs/cache/cog_matb_all_250hz_1s.npz --target-fs 250 --output outputs/tsmnet --epochs 30 --batch-size 64
+```
+
+Single-subject multi-session, sessions 1 and 2 as source and session 3 as target:
+
+```powershell
+python run_experiment.py --dataset cog-bci --cog-paradigm matb --protocol cog_multi_session --cache outputs/cache/cog_matb_all_250hz_1s.npz --target-fs 250 --output outputs/tsmnet --epochs 30 --batch-size 64
+```
+
+Leave-one-subject-out:
+
+```powershell
+python run_experiment.py --dataset cog-bci --cog-paradigm matb --protocol loso --cache outputs/cache/cog_matb_all_250hz_1s.npz --target-fs 250 --output outputs/tsmnet --epochs 30 --batch-size 64
+```
+
+## Strict No-Target-Adapt Variant
+
+By default, `spddsbn` uses TSMNet-style unsupervised target-domain BN refit with unlabeled target windows. To disable this for stricter no-target-feature experiments, append:
+
+```powershell
+--no-target-adapt
+```
+
+Example:
+
+```powershell
+python run_experiment.py --dataset eegmat --protocol loso --cache outputs/cache/eegmat_all_250hz_1s.npz --target-fs 250 --output outputs/tsmnet_no_target_adapt --epochs 30 --batch-size 64 --no-target-adapt
+```
+
+## Notes
+
+- Cache files are checked for dataset name and sampling rate. If you change `--target-fs`, use a matching cache name or pass `--rebuild-cache`.
+- Full-dataset COG-BCI caches can take time to build because each subject zip is decompressed and read from EEGLAB `.set/.fdt` files.
+- Outputs are saved under `outputs/tsmnet/<dataset>_<protocol>_<bnorm>/`.
+- `summary.csv` stores per-subject results; `aggregate_summary.csv` stores mean +/- standard deviation across evaluated subjects.

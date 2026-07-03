@@ -4,7 +4,7 @@ import sys
 
 import numpy as np
 import torch
-from sklearn.metrics import accuracy_score, balanced_accuracy_score
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, roc_auc_score
 from torch.utils.data import DataLoader, Dataset
 
 
@@ -103,7 +103,7 @@ def _forward_logits(model, xb, db):
 
 def evaluate(model, loader, device):
     model.eval()
-    losses, y_true, y_pred = [], [], []
+    losses, y_true, y_pred, y_prob = [], [], [], []
     loss_fn = torch.nn.CrossEntropyLoss()
     with torch.no_grad():
         for xb, yb, db in loader:
@@ -112,24 +112,42 @@ def evaluate(model, loader, device):
             logits = _forward_logits(model, xb, db)
             loss = loss_fn(logits, yb.to(logits.device))
             losses.append(float(loss.detach().cpu().item()))
-            pred = torch.argmax(logits.detach().cpu(), dim=1).numpy()
+            logits_cpu = logits.detach().cpu()
+            pred = torch.argmax(logits_cpu, dim=1).numpy()
+            prob = torch.softmax(logits_cpu, dim=1).numpy()
             y_pred.extend(pred.tolist())
+            y_prob.extend(prob.tolist())
             y_true.extend(yb.numpy().tolist())
+    auc = np.nan
+    if y_true:
+        y_true_arr = np.asarray(y_true)
+        y_prob_arr = np.asarray(y_prob)
+        try:
+            if y_prob_arr.shape[1] == 2:
+                auc = roc_auc_score(y_true_arr, y_prob_arr[:, 1])
+            else:
+                auc = roc_auc_score(y_true_arr, y_prob_arr, multi_class="ovr",
+                                    average="macro")
+        except ValueError:
+            auc = np.nan
     return {
         "loss": float(np.mean(losses)) if losses else np.nan,
         "accuracy": accuracy_score(y_true, y_pred) if y_true else np.nan,
         "balanced_accuracy": balanced_accuracy_score(y_true, y_pred) if y_true else np.nan,
+        "f1": f1_score(y_true, y_pred, average="macro") if y_true else np.nan,
+        "auc": auc,
     }
 
 
-def refit_batchnorm(model, x, y, domains, train_idx, test_idx, device):
+def refit_batchnorm(model, x, y, domains, train_idx, test_idx, device,
+                    target_adapt=True):
     xt = torch.from_numpy(x).float()
     yt = torch.from_numpy(y).long()
     dt = torch.from_numpy(domains).long()
     model.eval()
     with torch.no_grad():
         if hasattr(model, "domainadapt_finetune") and hasattr(model, "spddsbnorm"):
-            idx = np.concatenate([train_idx, test_idx])
+            idx = np.concatenate([train_idx, test_idx]) if target_adapt else train_idx
             model.domainadapt_finetune(xt[idx].to(device), yt[idx], dt[idx].to(device),
                                        target_domains=np.unique(domains[test_idx]))
         elif hasattr(model, "finetune"):
@@ -141,7 +159,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     epochs=30, batch_size=64, lr=1e-3, weight_decay=1e-4,
                     bnorm="spddsbn", augment=False, patience=8,
                     temporal_filters=4, spatial_filters=40, subspacedims=20,
-                    temp_kernel=25, seed=42):
+                    temp_kernel=25, seed=42, target_adapt=True):
     torch.manual_seed(int(seed))
     np.random.seed(int(seed))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -166,7 +184,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
-    best_state, best_loss, bad_epochs = None, float("inf"), 0
+    best_state, best_loss, best_epoch, bad_epochs = None, float("inf"), None, 0
     history = []
     for epoch in range(1, int(epochs) + 1):
         model.train()
@@ -188,6 +206,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         history.append(row)
         if val_metrics["loss"] < best_loss:
             best_loss = val_metrics["loss"]
+            best_epoch = epoch
             best_state = copy.deepcopy(model.state_dict())
             bad_epochs = 0
         else:
@@ -198,7 +217,8 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    refit_batchnorm(model, x, y, domains, split["train"], split["test"], device)
+    refit_batchnorm(model, x, y, domains, split["train"], split["test"], device,
+                    target_adapt=target_adapt)
     train_metrics = evaluate(model, train_loader, device)
     val_metrics = evaluate(model, val_loader, device)
     test_metrics = evaluate(model, test_loader, device)
@@ -214,4 +234,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         "val": val_metrics,
         "test": test_metrics,
         "epochs_ran": len(history),
+        "best_epoch": int(best_epoch) if best_epoch is not None else len(history),
+        "best_val_loss": float(best_loss),
+        "target_adapt": bool(target_adapt),
     }

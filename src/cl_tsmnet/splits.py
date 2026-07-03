@@ -54,6 +54,34 @@ def make_split(dataset, protocol, eval_subject, seed=42, val_size=0.2,
     return {"train": train, "val": val, "test": test}
 
 
+def split_label_counts(y, indices):
+    labels, counts = np.unique(y[np.asarray(indices, dtype=np.int64)], return_counts=True)
+    return {int(label): int(count) for label, count in zip(labels, counts)}
+
+
+def split_summary(dataset, split, eval_subject):
+    y = dataset["y"]
+    train = split["train"]
+    val = split["val"]
+    test = split["test"]
+    source = np.concatenate([train, val])
+    total = len(source) + len(test)
+    return {
+        "subject": int(eval_subject),
+        "n_source": int(len(source)),
+        "n_target": int(len(test)),
+        "n_train": int(len(train)),
+        "n_val": int(len(val)),
+        "n_test": int(len(test)),
+        "train_pct_total": float(len(train) / total) if total else 0.0,
+        "val_pct_total": float(len(val) / total) if total else 0.0,
+        "test_pct_total": float(len(test) / total) if total else 0.0,
+        "train_labels": split_label_counts(y, train),
+        "val_labels": split_label_counts(y, val),
+        "test_labels": split_label_counts(y, test),
+    }
+
+
 def domain_ids(dataset, protocol):
     meta = dataset["meta"]
     subject = meta["subject"].values.astype(np.int64)

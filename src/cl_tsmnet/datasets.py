@@ -215,7 +215,17 @@ def load_npz(path):
 def load_dataset(name, data_root="data", cache=None, rebuild_cache=False,
                  cog_paradigm="nback", **kwargs):
     if cache and os.path.exists(cache) and not rebuild_cache:
-        return load_npz(cache)
+        dataset = load_npz(cache)
+        expected_name = "cog-bci-{}".format(cog_paradigm) if name == "cog-bci" else name
+        if dataset["name"] != expected_name:
+            raise ValueError("Cache dataset mismatch: expected {}, found {} in {}".format(
+                expected_name, dataset["name"], cache))
+        requested_fs = kwargs.get("target_fs")
+        if requested_fs is not None and abs(float(dataset["fs"]) - float(requested_fs)) > 1e-6:
+            raise ValueError("Cache sampling-rate mismatch: requested {} Hz, found {} Hz in {}. "
+                             "Use the matching cache or pass --rebuild-cache.".format(
+                                 requested_fs, dataset["fs"], cache))
+        return dataset
     if kwargs.get("target_fs") is None:
         kwargs["target_fs"] = DEFAULT_TARGET_FS[name]
     if name == "stew":
