@@ -6,6 +6,12 @@ import numpy as np
 import pandas as pd
 
 from src.cl_tsmnet.datasets import load_dataset
+from src.cl_tsmnet.experiment_utils import (
+    append_master_summary,
+    default_cache_path,
+    default_target_fs,
+    run_directory_name,
+)
 from src.cl_tsmnet.splits import domain_ids, iter_eval_subjects, make_split
 from src.cl_tsmnet.training import train_one_split
 
@@ -62,7 +68,10 @@ def parse_args():
     parser.add_argument("--subject", type=int, default=None,
                         help="Evaluate one subject only. Default: run all subjects.")
     parser.add_argument("--cache", default=None,
-                        help="Optional .npz cache for preprocessed 1 s windows.")
+                        help="Optional .npz cache for preprocessed 1 s windows. "
+                             "Default: automatically named under outputs/cache/.")
+    parser.add_argument("--cache-root", default=os.path.join("outputs", "cache"),
+                        help="Directory used when --cache is omitted.")
     parser.add_argument("--target-fs", type=float, default=None,
                         help="Target sampling rate. Default: STEW=128 Hz, EEGMAT/COG-BCI=250 Hz.")
     parser.add_argument("--rebuild-cache", action="store_true")
@@ -79,7 +88,10 @@ def parse_args():
     parser.add_argument("--temp-kernel", type=int, default=25)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-size", type=float, default=0.2,
-                        help="Validation fraction inside the source domain.")
+                        help="Validation fraction for LOSO source subjects and COG fallback splits.")
+    parser.add_argument("--single-val-size", type=float, default=0.125,
+                        help="Validation fraction inside the single_session train+val block. "
+                             "Default 0.125 gives train/val/test = 0.7/0.1/0.2.")
     parser.add_argument("--test-size", type=float, default=0.2,
                         help="Target/test fraction for single_session only.")
     parser.add_argument("--no-augment", action="store_true",
@@ -90,7 +102,10 @@ def parse_args():
                         help="Reject windows whose source-normalized absolute amplitude exceeds this value.")
     parser.add_argument("--no-artifact-reject", action="store_true",
                         help="Disable artifact-window rejection after source-only normalization.")
-    parser.add_argument("--output", default="outputs/tsmnet")
+    parser.add_argument("--output", default="outputs",
+                        help="Root output directory. The run subdirectory is named automatically.")
+    parser.add_argument("--master-summary", default=os.path.join("outputs", "master_summary.csv"),
+                        help="CSV table appended once per completed run. Pass empty string to disable.")
     return parser.parse_args()
 
 
@@ -102,15 +117,26 @@ def main():
     load_sessions = (1, 2, 3)
     if args.dataset == "cog-bci" and args.protocol == "single_session":
         load_sessions = (1,)
+    target_fs = default_target_fs(args.dataset, args.target_fs)
+    cache = args.cache or default_cache_path(
+        args.dataset,
+        args.protocol,
+        cog_paradigm=args.cog_paradigm,
+        subject=args.subject,
+        target_fs=target_fs,
+        cache_root=args.cache_root,
+    )
+    print("Using cache:", cache)
+
     dataset = load_dataset(
         args.dataset,
         data_root=args.data_root,
-        cache=args.cache,
+        cache=cache,
         rebuild_cache=args.rebuild_cache,
         cog_paradigm=args.cog_paradigm,
         subjects=load_subjects,
         sessions=load_sessions,
-        target_fs=args.target_fs,
+        target_fs=target_fs,
         window_sec=1.0,
         stride_sec=1.0,
     )
@@ -121,8 +147,7 @@ def main():
     target_adapt = (not args.no_target_adapt) and args.model == "tsmnet"
     artifact_z = None if args.no_artifact_reject else args.artifact_z
 
-    run_tag = args.bnorm if args.model == "tsmnet" else "eegconformer"
-    run_name = "{}_{}_{}".format(dataset["name"], args.protocol, run_tag)
+    run_name = run_directory_name(dataset["name"], args.protocol, args.model, args.bnorm)
     out_root = os.path.join(args.output, run_name)
     if not os.path.exists(out_root):
         os.makedirs(out_root)
@@ -131,8 +156,9 @@ def main():
     model_name = _model_label(args)
     project_root = os.path.abspath(os.path.dirname(__file__))
     for subject in subjects:
+        split_val_size = args.single_val_size if args.protocol == "single_session" else args.val_size
         split = make_split(dataset, args.protocol, subject, seed=args.seed,
-                           val_size=args.val_size, test_size=args.test_size)
+                           val_size=split_val_size, test_size=args.test_size)
         fold_dir = os.path.join(out_root, "subject_{:02d}".format(int(subject)))
         res = train_one_split(
             dataset=dataset,
@@ -182,7 +208,7 @@ def main():
             "n_train": res["n_train"],
             "n_val": res["n_val"],
             "n_test": res["n_test"],
-            "val_size": args.val_size,
+            "val_size": split_val_size,
             "test_size": args.test_size if args.protocol == "single_session" else "",
         }
         results.append(row)
@@ -201,6 +227,25 @@ def main():
     aggregate_path = os.path.join(out_root, "aggregate_summary.csv")
     write_aggregate_summary(results, aggregate_path)
     print("Saved:", aggregate_path)
+    if args.master_summary:
+        append_master_summary(results, args.master_summary, {
+            "cog_paradigm": args.cog_paradigm if args.dataset == "cog-bci" else "",
+            "target_fs": target_fs,
+            "cache": cache,
+            "output_dir": out_root,
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "lr": args.lr,
+            "weight_decay": args.weight_decay,
+            "seed": args.seed,
+            "target_adapt": target_adapt,
+            "augment": augment,
+            "artifact_z": "" if artifact_z is None else artifact_z,
+            "val_size": args.val_size,
+            "single_val_size": args.single_val_size,
+            "test_size": args.test_size,
+        })
+        print("Updated:", args.master_summary)
 
 
 if __name__ == "__main__":
