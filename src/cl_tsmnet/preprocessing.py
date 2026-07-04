@@ -41,11 +41,11 @@ def _safe_sosfiltfilt(sos, data):
 
 
 def preprocess_eeg(data, fs, target_fs=128.0, band=(1.0, 45.0), notch=50.0):
-    """Band-pass, notch, resample, and robust-standardize EEG.
+    """Band-pass, notch, and resample EEG without fitting data statistics.
 
-    Input and output shapes are channels x samples. Robust scaling keeps this
-    unit-agnostic, which matters because STEW, EDF, and EEGLAB files expose
-    different numeric scales.
+    Input and output shapes are channels x samples. Split-dependent robust
+    normalization is fitted later from the source training windows only, so
+    cached windows do not contain target-domain recording statistics.
     """
     x = np.asarray(data, dtype=np.float64)
     x = np.nan_to_num(x)
@@ -74,17 +74,11 @@ def preprocess_eeg(data, fs, target_fs=128.0, band=(1.0, 45.0), notch=50.0):
         x = signal.resample_poly(x, up=up, down=down, axis=-1)
         out_fs = float(target_fs)
 
-    med = np.median(x, axis=-1, keepdims=True)
-    mad = np.median(np.abs(x - med), axis=-1, keepdims=True)
-    scale = 1.4826 * mad
-    scale[scale < 1e-8] = np.std(x, axis=-1, keepdims=True)[scale < 1e-8]
-    scale[scale < 1e-8] = 1.0
-    x = (x - med) / scale
     return x.astype(np.float32), out_fs
 
 
 def make_windows(data, fs, label, subject, session, paradigm, task,
-                 window_sec=1.0, stride_sec=1.0, reject_z=8.0):
+                 window_sec=1.0, stride_sec=1.0, reject_z=None):
     samples = int(round(float(window_sec) * float(fs)))
     stride = int(round(float(stride_sec) * float(fs)))
     if samples <= 0 or stride <= 0:

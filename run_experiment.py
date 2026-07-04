@@ -32,21 +32,26 @@ def _fmt_mean_std(values):
     return "{:.4f} +/- {:.4f}".format(mean, std)
 
 
-def write_aggregate_summary(rows, path):
+def write_aggregate_summary(rows, path, metric_prefix="test", metric_level="window"):
     df = pd.DataFrame(rows)
     agg_rows = []
+    acc_col = "{}_acc".format(metric_prefix)
+    bacc_col = "{}_bacc".format(metric_prefix)
+    f1_col = "{}_f1".format(metric_prefix)
+    auc_col = "{}_auc".format(metric_prefix)
     for (dataset, model, protocol), group in df.groupby(["dataset", "model", "protocol"]):
         agg_rows.append({
             "dataset": dataset,
             "model": model,
             "protocol": protocol,
+            "metric_level": metric_level,
             "n": int(len(group)),
-            "accuracy": _fmt_mean_std(group["test_acc"].values),
-            "balanced_accuracy": _fmt_mean_std(group["test_bacc"].values),
-            "f1": _fmt_mean_std(group["test_f1"].values),
-            "auc": _fmt_mean_std(group["test_auc"].values),
+            "accuracy": _fmt_mean_std(group[acc_col].values),
+            "balanced_accuracy": _fmt_mean_std(group[bacc_col].values),
+            "f1": _fmt_mean_std(group[f1_col].values),
+            "auc": _fmt_mean_std(group[auc_col].values),
         })
-    columns = ["dataset", "model", "protocol", "n", "accuracy",
+    columns = ["dataset", "model", "protocol", "metric_level", "n", "accuracy",
                "balanced_accuracy", "f1", "auc"]
     pd.DataFrame(agg_rows, columns=columns).to_csv(path, index=False)
 
@@ -86,6 +91,10 @@ def parse_args():
                         help="Disable light train-time augmentation for STEW/EEGMAT.")
     parser.add_argument("--no-target-adapt", action="store_true",
                         help="Disable unlabeled target-domain BN refit for SPDDSBN.")
+    parser.add_argument("--artifact-z", type=float, default=None,
+                        help="Reject windows whose source-normalized absolute amplitude exceeds this value.")
+    parser.add_argument("--no-artifact-reject", action="store_true",
+                        help="Disable artifact-window rejection after source-only normalization.")
     parser.add_argument("--output", default="outputs/tsmnet")
     return parser.parse_args()
 
@@ -115,6 +124,7 @@ def main():
         dataset["meta"], args.protocol, dataset["name"])
     augment = (args.dataset in ["stew", "eegmat"]) and (not args.no_augment)
     target_adapt = (not args.no_target_adapt) and args.model == "tsmnet"
+    artifact_z = None if args.no_artifact_reject else args.artifact_z
 
     run_tag = args.bnorm if args.model == "tsmnet" else "eegconformer"
     run_name = "{}_{}_{}".format(dataset["name"], args.protocol, run_tag)
@@ -148,6 +158,7 @@ def main():
             temp_kernel=args.temp_kernel,
             seed=args.seed + int(subject),
             target_adapt=target_adapt,
+            artifact_z=artifact_z,
         )
         row = {
             "dataset": dataset["name"],
@@ -160,21 +171,37 @@ def main():
             "best_epoch": res["best_epoch"],
             "best_val_loss": res["best_val_loss"],
             "target_adapt": res["target_adapt"],
+            "artifact_z": res["artifact_z"],
             "train_bacc": res["train"]["balanced_accuracy"],
             "val_bacc": res["val"]["balanced_accuracy"],
             "test_bacc": res["test"]["balanced_accuracy"],
+            "train_group_bacc": res["train_group"]["balanced_accuracy"],
+            "val_group_bacc": res["val_group"]["balanced_accuracy"],
+            "test_group_bacc": res["test_group"]["balanced_accuracy"],
             "train_acc": res["train"]["accuracy"],
             "val_acc": res["val"]["accuracy"],
             "test_acc": res["test"]["accuracy"],
+            "train_group_acc": res["train_group"]["accuracy"],
+            "val_group_acc": res["val_group"]["accuracy"],
+            "test_group_acc": res["test_group"]["accuracy"],
             "train_f1": res["train"]["f1"],
             "val_f1": res["val"]["f1"],
             "test_f1": res["test"]["f1"],
+            "train_group_f1": res["train_group"]["f1"],
+            "val_group_f1": res["val_group"]["f1"],
+            "test_group_f1": res["test_group"]["f1"],
             "train_auc": res["train"]["auc"],
             "val_auc": res["val"]["auc"],
             "test_auc": res["test"]["auc"],
-            "n_train": len(split["train"]),
-            "n_val": len(split["val"]),
-            "n_test": len(split["test"]),
+            "train_group_auc": res["train_group"]["auc"],
+            "val_group_auc": res["val_group"]["auc"],
+            "test_group_auc": res["test_group"]["auc"],
+            "n_train": res["n_train"],
+            "n_val": res["n_val"],
+            "n_test": res["n_test"],
+            "n_train_groups": res["train_group"]["n_groups"],
+            "n_val_groups": res["val_group"]["n_groups"],
+            "n_test_groups": res["test_group"]["n_groups"],
             "val_size": args.val_size,
             "test_size": args.test_size if args.protocol == "single_session" else "",
         }
@@ -192,8 +219,15 @@ def main():
         writer.writerows(results)
     print("Saved:", result_path)
     aggregate_path = os.path.join(out_root, "aggregate_summary.csv")
-    write_aggregate_summary(results, aggregate_path)
+    write_aggregate_summary(results, aggregate_path,
+                            metric_prefix="test_group",
+                            metric_level="recording")
     print("Saved:", aggregate_path)
+    window_aggregate_path = os.path.join(out_root, "window_aggregate_summary.csv")
+    write_aggregate_summary(results, window_aggregate_path,
+                            metric_prefix="test",
+                            metric_level="window")
+    print("Saved:", window_aggregate_path)
 
 
 if __name__ == "__main__":

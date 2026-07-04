@@ -1,6 +1,6 @@
 # Cognitive-load EEG Dataset Description
 
-This project uses 1 s non-overlapping windows for all datasets. Signals are filtered with a 1-45 Hz band-pass, a 50 Hz notch when the sampling rate allows it, robust-standardized per channel, and window-rejected when the standardized amplitude is extreme. Sampling rates are dataset-aware: STEW remains at 128 Hz, while EEGMAT and COG-BCI are resampled from 500 Hz to 250 Hz by default. This keeps more temporal detail from the 500 Hz datasets than 128 Hz while still reducing computation and memory.
+This project uses 1 s non-overlapping windows for all datasets. Cache construction performs channel selection, task/segment selection, 1-45 Hz band-pass filtering, 50 Hz notch filtering when the sampling rate allows it, and resampling. It does not fit normalization statistics on full recordings. During each experiment split, robust per-channel normalization is fitted from source-domain training windows only and then applied unchanged to validation and target/test windows. Artifact-window rejection is optional via `--artifact-z`; when enabled, it uses the same source-fitted normalization. The default formal protocol does not discard target windows after splitting. Sampling rates are dataset-aware: STEW remains at 128 Hz, while EEGMAT and COG-BCI are resampled from 500 Hz to 250 Hz by default. This keeps more temporal detail from the 500 Hz datasets than 128 Hz while still reducing computation and memory.
 
 ## STEW
 
@@ -38,10 +38,14 @@ This project uses 1 s non-overlapping windows for all datasets. Signals are filt
 
 ## Experiment Protocols
 
-- `single_session`: for STEW and EEGMAT, use the single session of one subject; for COG-BCI, use session 1 only. The subject/session windows are split stratified by label: 80% source and 20% target/test. The 80% source part is split again into 80% train and 20% validation. With default settings, the final approximate proportions are train/validation/test = 64%/16%/20%.
-- `cog_multi_session`: COG-BCI only. For each subject, sessions 1 and 2 are the source domain and session 3 is the target/test domain. The source domain is split stratified by label into 80% train and 20% validation. Session 3 is never used for supervised training.
-- `loso`: leave-one-subject-out. The held-out subject is the target/test domain; all other subjects are the source domain. The source domain is split stratified by label into 80% train and 20% validation. This applies to all three datasets.
-- Default split parameters: `--test-size 0.2` for `single_session`; `--val-size 0.2` inside the source domain for all protocols. These parameters are exposed in both `run_experiment.py` and `inspect_datasets.py`.
+- `single_session`: for STEW and EEGMAT, use the single session of one subject; for COG-BCI, use session 1 only. Each task record is sorted by time and split into contiguous blocks. With default settings, the approximate proportions are train/validation/test = 64%/16%/20%. This avoids random adjacent-window mixing between train, validation, and test.
+- `cog_multi_session`: COG-BCI only. For each subject, session 1 is the supervised training source, session 2 is the validation source, and session 3 is the target/test domain. Session 3 is never used for supervised training.
+- `loso`: leave-one-subject-out. The held-out subject is the target/test domain; all other subjects are the source domain. Validation is also subject-disjoint from training: approximately `--val-size` of the source subjects are held out for validation.
+- Default split parameters: `--test-size 0.2` for `single_session`; `--val-size 0.2` for single-session source validation blocks and LOSO source-subject validation. These parameters are exposed in both `run_experiment.py` and `inspect_datasets.py`.
+
+## Evaluation Level
+
+The raw model prediction is produced per 1 s window. For rigorous reporting, the project now also computes recording/task-level metrics. Windows sharing the same `(subject, session, paradigm, task)` are aggregated by averaging class probabilities, then the aggregated label is used to compute `*_group_acc`, `*_group_bacc`, `*_group_f1`, and `*_group_auc`. `aggregate_summary.csv` reports these recording/task-level test metrics by default. Window-level metrics remain in `summary.csv` as `test_acc`, `test_bacc`, `test_f1`, and `test_auc`, and `window_aggregate_summary.csv` summarizes them for comparison.
 
 ## Split Count Inspection
 
@@ -56,14 +60,12 @@ python inspect_datasets.py --dataset cog-bci --cog-paradigm nback --protocol cog
 python inspect_datasets.py --dataset stew --protocol loso --subject 1 --cache outputs/cache/stew_all_128hz_1s.npz
 ```
 
-Representative checked counts from the current caches:
+Representative counts should be regenerated after rebuilding strict caches, because older caches with record-level standardization are rejected and the split policy is now more conservative:
 
-| Dataset/protocol | Subject | Source | Train | Validation | Target/Test | Label distribution |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| STEW `single_session` | 1 | 196 | 156 | 40 | 50 | train `{0: 93, 1: 63}`, val `{0: 24, 1: 16}`, test `{0: 30, 1: 20}` |
-| EEGMAT `single_session`, 250 Hz, 60 s/60 s | 1 | 86 | 68 | 18 | 22 | train `{0: 34, 1: 34}`, val `{0: 9, 1: 9}`, test `{0: 11, 1: 11}` |
-| COG-BCI N-Back `cog_multi_session`, 250 Hz | 1 | 1809 | 1447 | 362 | 787 | train `{0: 457, 1: 505, 2: 485}`, val `{0: 115, 1: 126, 2: 121}`, test `{0: 274, 1: 258, 2: 255}` |
-| STEW `loso` | 1 | 11745 | 9396 | 2349 | 246 | train `{0: 4835, 1: 4561}`, val `{0: 1209, 1: 1140}`, test `{0: 147, 1: 99}` |
+```powershell
+python inspect_datasets.py --dataset stew --protocol loso --cache outputs/cache/stew_all_128hz_1s.npz --rebuild-cache
+python inspect_datasets.py --dataset eegmat --protocol loso --cache outputs/cache/eegmat_all_250hz_1s.npz --target-fs 250 --rebuild-cache
+```
 
 ## Running
 
@@ -82,11 +84,12 @@ By default, `spddsbn` uses TSMNet-style unsupervised target-domain adaptation: t
 
 Use `--model eegconformer` for the EEG-Conformer baseline. The implementation keeps the original model idea, convolutional patch embedding followed by Transformer encoder and fully connected classifier, but makes channel count, window length, and class count dynamic for STEW, EEGMAT, and COG-BCI. EEG-Conformer does not perform target-domain adaptation; target-domain data is never used in training or normalization refitting.
 
-Cache files should match the loaded scope. For example, do not reuse a `sub01` COG-BCI cache for a leave-one-subject-out run over all subjects. The loader now checks dataset name and requested sampling rate when reusing caches.
+Cache files should match the loaded scope. For example, do not reuse a `sub01` COG-BCI cache for a leave-one-subject-out run over all subjects. The loader checks dataset name, requested sampling rate, and strict preprocessing metadata. Older caches that contain record-level standardization must be rebuilt with `--rebuild-cache`.
 
 ## Output Files
 
-- `summary.csv`: one raw row per evaluated subject/fold. It keeps the per-subject metrics, split sizes, `epochs_ran`, `best_epoch`, and `best_val_loss`.
+- `summary.csv`: one raw row per evaluated subject/fold. It keeps split sizes after source-normalized artifact rejection, `epochs_ran`, `best_epoch`, `best_val_loss`, window-level metrics, and recording/task-level group metrics.
 - `subject_##/history.csv`: epoch-level training history with `is_best_epoch=True` on the selected best validation epoch.
 - `subject_##/model.pt`: the model state restored from the best validation epoch, then evaluated and saved.
-- `aggregate_summary.csv`: protocol-level summary with columns `dataset, model, protocol, n, accuracy, balanced_accuracy, f1, auc`. Metrics are formatted as `mean +/- std` with four decimals, for example `0.7539 +/- 0.0956`.
+- `aggregate_summary.csv`: protocol-level recording/task-level summary with columns `dataset, model, protocol, metric_level, n, accuracy, balanced_accuracy, f1, auc`. Metrics are formatted as `mean +/- std` with four decimals, for example `0.7539 +/- 0.0956`.
+- `window_aggregate_summary.csv`: the same aggregate format using window-level test metrics for comparison and ablation reporting.

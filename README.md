@@ -2,12 +2,18 @@
 
 This file lists the full commands for running TSMNet and EEG-Conformer experiments on STEW, EEGMAT, and COG-BCI.
 
-Before formal training, inspect the split once to confirm the cached dataset, sampling rate, subject scope, and train/validation/test counts are correct.
+Before formal training, rebuild strict caches once and inspect the split to confirm sampling rate, subject scope, train/validation/test counts, and subject-disjoint validation where applicable. Older caches with record-level standardization are rejected by the loader.
 
 ## Split Inspection
 
 ```powershell
 python inspect_datasets.py --dataset stew --protocol loso --cache outputs/cache/stew_all_128hz_1s.npz
+```
+
+Add `--rebuild-cache` the first time you regenerate the strict cache:
+
+```powershell
+python inspect_datasets.py --dataset stew --protocol loso --cache outputs/cache/stew_all_128hz_1s.npz --rebuild-cache
 ```
 
 ```powershell
@@ -158,7 +164,11 @@ python run_experiment.py --model eegconformer --dataset cog-bci --cog-paradigm m
 
 ## Notes
 
-- Cache files are checked for dataset name and sampling rate. If you change `--target-fs`, use a matching cache name or pass `--rebuild-cache`.
+- Cache files are checked for dataset name, sampling rate, and strict preprocessing metadata. If you change `--target-fs`, use a matching cache name or pass `--rebuild-cache`.
+- Cache construction does not use full-recording standardization. Robust normalization is fitted from source-domain training windows inside each split, then applied to validation and target/test windows.
+- Artifact-window rejection is off by default for the formal protocol so the target/test set remains fixed. Use `--artifact-z <value>` only for an explicitly reported ablation.
+- `single_session` uses contiguous time blocks within each task record; `cog_multi_session` uses COG-BCI S1/S2/S3 as train/validation/test; `loso` uses subject-disjoint source validation.
+- `aggregate_summary.csv` reports recording/task-level metrics by default, after averaging window probabilities within each `(subject, session, paradigm, task)`. `window_aggregate_summary.csv` keeps the window-level aggregate for comparison.
 - Full-dataset COG-BCI caches can take time to build because each subject zip is decompressed and read from EEGLAB `.set/.fdt` files.
 - Outputs are saved under `outputs/<model>/<dataset>_<protocol>_<model-or-bnorm>/`.
-- `summary.csv` stores per-subject results; `aggregate_summary.csv` stores mean +/- standard deviation across evaluated subjects.
+- `summary.csv` stores per-subject/fold raw results, including window-level `test_*` metrics and recording/task-level `test_group_*` metrics.

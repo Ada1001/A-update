@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader, Dataset
 
 class EEGWindowDataset(Dataset):
     def __init__(self, x, y, d, indices, augment=False, noise_std=0.03,
-                 shift_samples=8, channel_dropout=0.05):
+                 shift_samples=8, channel_dropout=0.05, normalizer=None):
         self.x = x
         self.y = y
         self.d = d
@@ -21,6 +21,7 @@ class EEGWindowDataset(Dataset):
         self.noise_std = float(noise_std)
         self.shift_samples = int(shift_samples)
         self.channel_dropout = float(channel_dropout)
+        self.normalizer = normalizer
 
     def __len__(self):
         return len(self.indices)
@@ -28,6 +29,8 @@ class EEGWindowDataset(Dataset):
     def __getitem__(self, item):
         idx = self.indices[item]
         x = np.array(self.x[idx], copy=True)
+        if self.normalizer is not None:
+            x = self.normalizer.transform_window(x)
         if self.augment:
             if self.shift_samples > 0:
                 shift = np.random.randint(-self.shift_samples, self.shift_samples + 1)
@@ -40,6 +43,76 @@ class EEGWindowDataset(Dataset):
         return (torch.from_numpy(x.astype(np.float32)),
                 torch.tensor(int(self.y[idx]), dtype=torch.long),
                 torch.tensor(int(self.d[idx]), dtype=torch.long))
+
+
+class RobustSourceNormalizer:
+    def __init__(self, center, scale):
+        self.center = np.asarray(center, dtype=np.float32)
+        self.scale = np.asarray(scale, dtype=np.float32)
+
+    def transform_window(self, x):
+        return (x - self.center[:, None]) / self.scale[:, None]
+
+    def transform_array(self, x):
+        return (x - self.center[None, :, None]) / self.scale[None, :, None]
+
+
+def fit_source_normalizer(x, indices):
+    idx = np.asarray(indices, dtype=np.int64)
+    train_x = np.asarray(x[idx], dtype=np.float32)
+    center = np.median(train_x, axis=(0, 2))
+    mad = np.median(np.abs(train_x - center[None, :, None]), axis=(0, 2))
+    scale = (1.4826 * mad).astype(np.float32)
+    small = scale < 1e-8
+    if np.any(small):
+        fallback = np.std(train_x, axis=(0, 2)).astype(np.float32)
+        scale[small] = fallback[small]
+    scale[scale < 1e-8] = 1.0
+    return RobustSourceNormalizer(center, scale)
+
+
+def _filter_artifact_windows(x, indices, normalizer, artifact_z):
+    idx = np.asarray(indices, dtype=np.int64)
+    if artifact_z is None:
+        return idx
+    keep = []
+    threshold = float(artifact_z)
+    for i in idx:
+        w = normalizer.transform_window(x[i])
+        if np.isfinite(w).all() and float(np.max(np.abs(w))) <= threshold:
+            keep.append(int(i))
+    return np.asarray(keep, dtype=np.int64)
+
+
+def _metrics_from_arrays(y_true, y_pred, y_prob):
+    y_true = np.asarray(y_true, dtype=np.int64)
+    y_pred = np.asarray(y_pred, dtype=np.int64)
+    y_prob = np.asarray(y_prob, dtype=np.float32)
+    if len(y_true) == 0:
+        return {
+            "accuracy": np.nan,
+            "balanced_accuracy": np.nan,
+            "f1": np.nan,
+            "auc": np.nan,
+        }
+    auc = np.nan
+    try:
+        if y_prob.shape[1] == 2:
+            auc = roc_auc_score(y_true, y_prob[:, 1])
+        else:
+            auc = roc_auc_score(y_true, y_prob, multi_class="ovr",
+                                average="macro")
+    except ValueError:
+        auc = np.nan
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
+        f1 = f1_score(y_true, y_pred, average="macro")
+    return {
+        "accuracy": accuracy_score(y_true, y_pred),
+        "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
+        "f1": f1,
+        "auc": auc,
+    }
 
 
 def _ensure_tsmnet_on_path(project_root):
@@ -125,7 +198,7 @@ def _forward_logits(model, xb, db):
     return out[0] if isinstance(out, (tuple, list)) else out
 
 
-def evaluate(model, loader, device):
+def evaluate(model, loader, device, return_predictions=False):
     model.eval()
     losses, y_true, y_pred, y_prob = [], [], [], []
     loss_fn = torch.nn.CrossEntropyLoss()
@@ -142,46 +215,69 @@ def evaluate(model, loader, device):
             y_pred.extend(pred.tolist())
             y_prob.extend(prob.tolist())
             y_true.extend(yb.numpy().tolist())
-    auc = np.nan
-    if y_true:
-        y_true_arr = np.asarray(y_true)
-        y_prob_arr = np.asarray(y_prob)
-        try:
-            if y_prob_arr.shape[1] == 2:
-                auc = roc_auc_score(y_true_arr, y_prob_arr[:, 1])
-            else:
-                auc = roc_auc_score(y_true_arr, y_prob_arr, multi_class="ovr",
-                                    average="macro")
-        except ValueError:
-            auc = np.nan
-    f1 = np.nan
-    if y_true:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
-            f1 = f1_score(y_true, y_pred, average="macro")
-    return {
+    metrics = _metrics_from_arrays(y_true, y_pred, y_prob)
+    metrics.update({
         "loss": float(np.mean(losses)) if losses else np.nan,
-        "accuracy": accuracy_score(y_true, y_pred) if y_true else np.nan,
-        "balanced_accuracy": balanced_accuracy_score(y_true, y_pred) if y_true else np.nan,
-        "f1": f1,
-        "auc": auc,
-    }
+    })
+    if return_predictions:
+        metrics["y_true"] = np.asarray(y_true, dtype=np.int64)
+        metrics["y_pred"] = np.asarray(y_pred, dtype=np.int64)
+        metrics["y_prob"] = np.asarray(y_prob, dtype=np.float32)
+        metrics["indices"] = np.asarray(loader.dataset.indices, dtype=np.int64)
+    return metrics
+
+
+def aggregate_recording_metrics(pred_metrics, meta):
+    """Average window probabilities within each subject/session/task record."""
+    if "indices" not in pred_metrics or len(pred_metrics["indices"]) == 0:
+        return {"accuracy": np.nan, "balanced_accuracy": np.nan,
+                "f1": np.nan, "auc": np.nan, "n_groups": 0}
+    frame = meta.iloc[pred_metrics["indices"]].copy().reset_index(drop=True)
+    frame["_row"] = np.arange(len(frame))
+    y_group, pred_group, prob_group = [], [], []
+    group_cols = ["subject", "session", "paradigm", "task"]
+    for _, group in frame.groupby(group_cols, sort=True):
+        rows = group["_row"].values.astype(np.int64)
+        labels = pred_metrics["y_true"][rows]
+        unique_labels = np.unique(labels)
+        if len(unique_labels) != 1:
+            continue
+        prob = np.mean(pred_metrics["y_prob"][rows], axis=0)
+        y_group.append(int(unique_labels[0]))
+        prob_group.append(prob)
+        pred_group.append(int(np.argmax(prob)))
+    if not y_group:
+        return {"accuracy": np.nan, "balanced_accuracy": np.nan,
+                "f1": np.nan, "auc": np.nan, "n_groups": 0}
+    metrics = _metrics_from_arrays(y_group, pred_group, prob_group)
+    metrics["n_groups"] = int(len(y_group))
+    return metrics
 
 
 def refit_batchnorm(model, x, y, domains, train_idx, test_idx, device,
-                    target_adapt=True):
-    xt = torch.from_numpy(x).float()
-    yt = torch.from_numpy(y).long()
-    dt = torch.from_numpy(domains).long()
+                    target_adapt=True, normalizer=None):
     model.eval()
     with torch.no_grad():
         if hasattr(model, "domainadapt_finetune") and hasattr(model, "spddsbnorm"):
             idx = np.concatenate([train_idx, test_idx]) if target_adapt else train_idx
-            model.domainadapt_finetune(xt[idx].to(device), yt[idx], dt[idx].to(device),
-                                       target_domains=np.unique(domains[test_idx]))
+            xt = x[idx]
+            if normalizer is not None:
+                xt = normalizer.transform_array(xt)
+            model.domainadapt_finetune(
+                torch.from_numpy(xt).float().to(device),
+                torch.from_numpy(y[idx]).long(),
+                torch.from_numpy(domains[idx]).long().to(device),
+                target_domains=np.unique(domains[test_idx]),
+            )
         elif hasattr(model, "finetune"):
-            model.finetune(xt[train_idx].to(device), yt[train_idx],
-                           dt[train_idx].to(device))
+            xt = x[train_idx]
+            if normalizer is not None:
+                xt = normalizer.transform_array(xt)
+            model.finetune(
+                torch.from_numpy(xt).float().to(device),
+                torch.from_numpy(y[train_idx]).long(),
+                torch.from_numpy(domains[train_idx]).long().to(device),
+            )
 
 
 def train_one_split(dataset, domains, split, project_root, output_dir=None,
@@ -189,12 +285,22 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     bnorm="spddsbn", augment=False, patience=8,
                     model_type="tsmnet",
                     temporal_filters=4, spatial_filters=40, subspacedims=20,
-                    temp_kernel=25, seed=42, target_adapt=True):
+                    temp_kernel=25, seed=42, target_adapt=True,
+                    artifact_z=None):
     torch.manual_seed(int(seed))
     np.random.seed(int(seed))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     x, y = dataset["x"], dataset["y"]
+    normalizer = fit_source_normalizer(x, split["train"])
+    split = {
+        "train": _filter_artifact_windows(x, split["train"], normalizer, artifact_z),
+        "val": _filter_artifact_windows(x, split["val"], normalizer, artifact_z),
+        "test": _filter_artifact_windows(x, split["test"], normalizer, artifact_z),
+    }
+    if len(split["train"]) == 0 or len(split["val"]) == 0 or len(split["test"]) == 0:
+        raise RuntimeError("Artifact rejection removed an entire split: train={}, val={}, test={}".format(
+            len(split["train"]), len(split["val"]), len(split["test"])))
     selected = np.concatenate([split["train"], split["val"], split["test"]])
     nclasses = int(len(np.unique(y[selected])))
     if model_type == "tsmnet":
@@ -215,10 +321,14 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                                model_type=model_type)
     loss_fn = torch.nn.CrossEntropyLoss()
 
-    train_ds = EEGWindowDataset(x, y, domains, split["train"], augment=augment)
-    train_eval_ds = EEGWindowDataset(x, y, domains, split["train"], augment=False)
-    val_ds = EEGWindowDataset(x, y, domains, split["val"], augment=False)
-    test_ds = EEGWindowDataset(x, y, domains, split["test"], augment=False)
+    train_ds = EEGWindowDataset(x, y, domains, split["train"], augment=augment,
+                                normalizer=normalizer)
+    train_eval_ds = EEGWindowDataset(x, y, domains, split["train"], augment=False,
+                                     normalizer=normalizer)
+    val_ds = EEGWindowDataset(x, y, domains, split["val"], augment=False,
+                              normalizer=normalizer)
+    test_ds = EEGWindowDataset(x, y, domains, split["test"], augment=False,
+                               normalizer=normalizer)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=False)
     train_eval_loader = DataLoader(train_eval_ds, batch_size=batch_size, shuffle=False)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
@@ -259,10 +369,13 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
 
     if model_type == "tsmnet":
         refit_batchnorm(model, x, y, domains, split["train"], split["test"], device,
-                        target_adapt=target_adapt)
-    train_metrics = evaluate(model, train_eval_loader, device)
-    val_metrics = evaluate(model, val_loader, device)
-    test_metrics = evaluate(model, test_loader, device)
+                        target_adapt=target_adapt, normalizer=normalizer)
+    train_metrics = evaluate(model, train_eval_loader, device, return_predictions=True)
+    val_metrics = evaluate(model, val_loader, device, return_predictions=True)
+    test_metrics = evaluate(model, test_loader, device, return_predictions=True)
+    train_group_metrics = aggregate_recording_metrics(train_metrics, dataset["meta"])
+    val_group_metrics = aggregate_recording_metrics(val_metrics, dataset["meta"])
+    test_group_metrics = aggregate_recording_metrics(test_metrics, dataset["meta"])
 
     if output_dir:
         if not os.path.exists(output_dir):
@@ -274,8 +387,15 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         "train": train_metrics,
         "val": val_metrics,
         "test": test_metrics,
+        "train_group": train_group_metrics,
+        "val_group": val_group_metrics,
+        "test_group": test_group_metrics,
         "epochs_ran": len(history),
         "best_epoch": int(best_epoch) if best_epoch is not None else len(history),
         "best_val_loss": float(best_loss),
         "target_adapt": bool(target_adapt),
+        "n_train": int(len(split["train"])),
+        "n_val": int(len(split["val"])),
+        "n_test": int(len(split["test"])),
+        "artifact_z": "" if artifact_z is None else float(artifact_z),
     }

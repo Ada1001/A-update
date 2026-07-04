@@ -54,6 +54,7 @@ def main():
             rows.append(split_summary(ds, split, subject))
         table = pd.DataFrame(rows)
         display_cols = ["subject", "n_source", "n_target", "n_train", "n_val", "n_test",
+                        "train_subjects", "val_subjects", "test_subjects",
                         "train_pct_total", "val_pct_total", "test_pct_total",
                         "train_labels", "val_labels", "test_labels"]
         print("\nsplit protocol:", args.protocol)

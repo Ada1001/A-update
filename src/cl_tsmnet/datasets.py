@@ -45,6 +45,7 @@ def _pack_dataset(name, all_x, all_rows, channels, fs, label_names):
         "channels": list(channels),
         "fs": float(fs),
         "label_names": dict(label_names),
+        "preprocess_standardized": False,
     }
 
 
@@ -62,7 +63,7 @@ def _crop_eegmat_segment(data, fs, rec):
 
 
 def load_stew(data_root, target_fs=128.0, window_sec=1.0, stride_sec=1.0,
-              reject_z=8.0, subjects=None, sessions=None):
+              reject_z=None, subjects=None, sessions=None):
     root = os.path.join(data_root, "STEW Dataset")
     all_x, all_rows = [], []
     for path in sorted(glob.glob(os.path.join(root, "sub*_*.txt"))):
@@ -84,7 +85,7 @@ def load_stew(data_root, target_fs=128.0, window_sec=1.0, stride_sec=1.0,
 
 
 def load_eegmat(data_root, target_fs=250.0, window_sec=1.0, stride_sec=1.0,
-                reject_z=8.0, subjects=None, sessions=None):
+                reject_z=None, subjects=None, sessions=None):
     import mne
 
     root = os.path.join(data_root, EEGMAT_DIRNAME)
@@ -125,7 +126,7 @@ def _extract_eeglab_pair(zip_file, set_name, workdir):
 
 def load_cog_bci(data_root, paradigm="nback", sessions=(1, 2, 3),
                  target_fs=250.0, window_sec=1.0, stride_sec=1.0,
-                 reject_z=8.0, subjects=None):
+                 reject_z=None, subjects=None):
     import mne
 
     if paradigm not in COG_TASKS:
@@ -188,6 +189,9 @@ def save_npz(dataset, path):
         channels=np.asarray(dataset["channels"]).astype("U32"),
         fs=np.asarray([dataset["fs"]], dtype=np.float32),
         name=np.asarray([dataset["name"]]).astype("U64"),
+        preprocess_standardized=np.asarray(
+            [bool(dataset.get("preprocess_standardized", False))], dtype=np.bool_
+        ),
     )
 
 
@@ -201,6 +205,9 @@ def load_npz(path):
         "task": data["task"].astype(str),
         "start_sample": data["start_sample"].astype(np.int64),
     })
+    preprocess_standardized = None
+    if "preprocess_standardized" in data.files:
+        preprocess_standardized = bool(data["preprocess_standardized"][0])
     return {
         "name": str(data["name"][0]),
         "x": data["x"].astype(np.float32),
@@ -209,6 +216,7 @@ def load_npz(path):
         "channels": [str(c) for c in data["channels"]],
         "fs": float(data["fs"][0]),
         "label_names": {},
+        "preprocess_standardized": preprocess_standardized,
     }
 
 
@@ -225,6 +233,12 @@ def load_dataset(name, data_root="data", cache=None, rebuild_cache=False,
             raise ValueError("Cache sampling-rate mismatch: requested {} Hz, found {} Hz in {}. "
                              "Use the matching cache or pass --rebuild-cache.".format(
                                  requested_fs, dataset["fs"], cache))
+        if dataset.get("preprocess_standardized") is not False:
+            raise ValueError(
+                "Cache {} was produced by an older preprocessing pipeline or contains "
+                "record-level standardization. Rebuild it with --rebuild-cache for the "
+                "strict source-only normalization protocol.".format(cache)
+            )
         return dataset
     if kwargs.get("target_fs") is None:
         kwargs["target_fs"] = DEFAULT_TARGET_FS[name]
