@@ -80,6 +80,8 @@ The default model is the original TSMNet with SPD domain-specific batch normaliz
 
 By default, `spddsbn` uses TSMNet-style unsupervised target-domain adaptation: target/test windows are used without labels to refit domain-specific BN statistics before evaluation. This is recorded as `target_adapt=True` in `summary.csv`. Use `--no-target-adapt` for a stricter no-target-feature baseline.
 
+Use `--model eegconformer` for the EEG-Conformer baseline. The implementation keeps the original model idea, convolutional patch embedding followed by Transformer encoder and fully connected classifier, but makes channel count, window length, and class count dynamic for STEW, EEGMAT, and COG-BCI. EEG-Conformer does not perform target-domain adaptation; target-domain data is never used in training or normalization refitting.
+
 Cache files should match the loaded scope. For example, do not reuse a `sub01` COG-BCI cache for a leave-one-subject-out run over all subjects. The loader now checks dataset name and requested sampling rate when reusing caches.
 
 ## Output Files

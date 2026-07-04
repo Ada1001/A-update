@@ -1,6 +1,6 @@
-# TSMNet Experiment Commands
+# TSMNet and EEG-Conformer Experiment Commands
 
-This file lists the full commands for running TSMNet experiments on STEW, EEGMAT, and COG-BCI.
+This file lists the full commands for running TSMNet and EEG-Conformer experiments on STEW, EEGMAT, and COG-BCI.
 
 Before formal training, inspect the split once to confirm the cached dataset, sampling rate, subject scope, and train/validation/test counts are correct.
 
@@ -104,9 +104,61 @@ Example:
 python run_experiment.py --dataset eegmat --protocol loso --cache outputs/cache/eegmat_all_250hz_1s.npz --target-fs 250 --output outputs/tsmnet_no_target_adapt --epochs 30 --batch-size 64 --no-target-adapt
 ```
 
+## EEG-Conformer Baseline
+
+EEG-Conformer has no cross-domain adaptation in this project. Target-domain windows are used only for final testing.
+
+STEW:
+
+```powershell
+python run_experiment.py --model eegconformer --dataset stew --protocol single_session --cache outputs/cache/stew_all_128hz_1s.npz --output outputs/eegconformer --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model eegconformer --dataset stew --protocol loso --cache outputs/cache/stew_all_128hz_1s.npz --output outputs/eegconformer --epochs 30 --batch-size 64
+```
+
+EEGMAT:
+
+```powershell
+python run_experiment.py --model eegconformer --dataset eegmat --protocol single_session --cache outputs/cache/eegmat_all_250hz_1s.npz --target-fs 250 --output outputs/eegconformer --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model eegconformer --dataset eegmat --protocol loso --cache outputs/cache/eegmat_all_250hz_1s.npz --target-fs 250 --output outputs/eegconformer --epochs 30 --batch-size 64
+```
+
+COG-BCI N-Back:
+
+```powershell
+python run_experiment.py --model eegconformer --dataset cog-bci --cog-paradigm nback --protocol single_session --cache outputs/cache/cog_nback_all_250hz_1s.npz --target-fs 250 --output outputs/eegconformer --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model eegconformer --dataset cog-bci --cog-paradigm nback --protocol cog_multi_session --cache outputs/cache/cog_nback_all_250hz_1s.npz --target-fs 250 --output outputs/eegconformer --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model eegconformer --dataset cog-bci --cog-paradigm nback --protocol loso --cache outputs/cache/cog_nback_all_250hz_1s.npz --target-fs 250 --output outputs/eegconformer --epochs 30 --batch-size 64
+```
+
+COG-BCI MAT-B:
+
+```powershell
+python run_experiment.py --model eegconformer --dataset cog-bci --cog-paradigm matb --protocol single_session --cache outputs/cache/cog_matb_all_250hz_1s.npz --target-fs 250 --output outputs/eegconformer --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model eegconformer --dataset cog-bci --cog-paradigm matb --protocol cog_multi_session --cache outputs/cache/cog_matb_all_250hz_1s.npz --target-fs 250 --output outputs/eegconformer --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model eegconformer --dataset cog-bci --cog-paradigm matb --protocol loso --cache outputs/cache/cog_matb_all_250hz_1s.npz --target-fs 250 --output outputs/eegconformer --epochs 30 --batch-size 64
+```
+
 ## Notes
 
 - Cache files are checked for dataset name and sampling rate. If you change `--target-fs`, use a matching cache name or pass `--rebuild-cache`.
 - Full-dataset COG-BCI caches can take time to build because each subject zip is decompressed and read from EEGLAB `.set/.fdt` files.
-- Outputs are saved under `outputs/tsmnet/<dataset>_<protocol>_<bnorm>/`.
+- Outputs are saved under `outputs/<model>/<dataset>_<protocol>_<model-or-bnorm>/`.
 - `summary.csv` stores per-subject results; `aggregate_summary.csv` stores mean +/- standard deviation across evaluated subjects.

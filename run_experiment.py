@@ -13,6 +13,8 @@ from src.cl_tsmnet.training import train_one_split
 def _model_label(args):
     if args.model_name:
         return args.model_name
+    if args.model == "eegconformer":
+        return "eegconformer"
     if args.bnorm == "spddsbn":
         return "tsmnet_spddsbn"
     if args.bnorm == "spdbn":
@@ -56,6 +58,7 @@ def parse_args():
     parser.add_argument("--cog-paradigm", choices=["nback", "matb"], default="nback")
     parser.add_argument("--protocol", choices=["single_session", "cog_multi_session", "loso"],
                         required=True)
+    parser.add_argument("--model", choices=["tsmnet", "eegconformer"], default="tsmnet")
     parser.add_argument("--subject", type=int, default=None,
                         help="Evaluate one subject only. Default: run all subjects.")
     parser.add_argument("--cache", default=None,
@@ -111,9 +114,10 @@ def main():
     subjects = [args.subject] if args.subject is not None else iter_eval_subjects(
         dataset["meta"], args.protocol, dataset["name"])
     augment = (args.dataset in ["stew", "eegmat"]) and (not args.no_augment)
-    target_adapt = not args.no_target_adapt
+    target_adapt = (not args.no_target_adapt) and args.model == "tsmnet"
 
-    run_name = "{}_{}_{}".format(dataset["name"], args.protocol, args.bnorm)
+    run_tag = args.bnorm if args.model == "tsmnet" else "eegconformer"
+    run_name = "{}_{}_{}".format(dataset["name"], args.protocol, run_tag)
     out_root = os.path.join(args.output, run_name)
     if not os.path.exists(out_root):
         os.makedirs(out_root)
@@ -137,6 +141,7 @@ def main():
             weight_decay=args.weight_decay,
             bnorm=args.bnorm,
             augment=augment,
+            model_type=args.model,
             temporal_filters=args.temporal_filters,
             spatial_filters=args.spatial_filters,
             subspacedims=args.subspacedims,
@@ -149,7 +154,8 @@ def main():
             "model": model_name,
             "protocol": args.protocol,
             "subject": int(subject),
-            "bnorm": args.bnorm,
+            "model_type": args.model,
+            "bnorm": args.bnorm if args.model == "tsmnet" else "",
             "epochs_ran": res["epochs_ran"],
             "best_epoch": res["best_epoch"],
             "best_val_loss": res["best_val_loss"],

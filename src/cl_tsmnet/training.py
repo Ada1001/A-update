@@ -1,10 +1,12 @@
 import copy
 import os
 import sys
+import warnings
 
 import numpy as np
 import torch
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, roc_auc_score
+from sklearn.exceptions import UndefinedMetricWarning
 from torch.utils.data import DataLoader, Dataset
 
 
@@ -71,7 +73,26 @@ def build_tsmnet(project_root, nchannels, nsamples, nclasses, domains,
     return model
 
 
-def make_optimizer(model, lr=1e-3, weight_decay=1e-4):
+def build_eegconformer(nchannels, nsamples, nclasses, temporal_kernel=25,
+                       emb_size=40, depth=6, num_heads=5, dropout=0.5):
+    from .eeg_conformer import EEGConformer
+
+    return EEGConformer(
+        nchannels=int(nchannels),
+        nsamples=int(nsamples),
+        nclasses=int(nclasses),
+        emb_size=int(emb_size),
+        depth=int(depth),
+        num_heads=int(num_heads),
+        temporal_kernel=int(temporal_kernel),
+        dropout=float(dropout),
+    )
+
+
+def make_optimizer(model, lr=1e-3, weight_decay=1e-4, model_type="tsmnet"):
+    if model_type != "tsmnet":
+        return torch.optim.Adam(model.parameters(), lr=float(lr),
+                                weight_decay=float(weight_decay))
     try:
         import geoopt
         optim_cls = geoopt.optim.RiemannianAdam
@@ -97,7 +118,10 @@ def make_optimizer(model, lr=1e-3, weight_decay=1e-4):
 
 
 def _forward_logits(model, xb, db):
-    out = model(xb, db)
+    if getattr(model, "requires_domain", True):
+        out = model(xb, db)
+    else:
+        out = model(xb)
     return out[0] if isinstance(out, (tuple, list)) else out
 
 
@@ -130,11 +154,16 @@ def evaluate(model, loader, device):
                                     average="macro")
         except ValueError:
             auc = np.nan
+    f1 = np.nan
+    if y_true:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
+            f1 = f1_score(y_true, y_pred, average="macro")
     return {
         "loss": float(np.mean(losses)) if losses else np.nan,
         "accuracy": accuracy_score(y_true, y_pred) if y_true else np.nan,
         "balanced_accuracy": balanced_accuracy_score(y_true, y_pred) if y_true else np.nan,
-        "f1": f1_score(y_true, y_pred, average="macro") if y_true else np.nan,
+        "f1": f1,
         "auc": auc,
     }
 
@@ -158,6 +187,7 @@ def refit_batchnorm(model, x, y, domains, train_idx, test_idx, device,
 def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     epochs=30, batch_size=64, lr=1e-3, weight_decay=1e-4,
                     bnorm="spddsbn", augment=False, patience=8,
+                    model_type="tsmnet",
                     temporal_filters=4, spatial_filters=40, subspacedims=20,
                     temp_kernel=25, seed=42, target_adapt=True):
     torch.manual_seed(int(seed))
@@ -167,20 +197,30 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
     x, y = dataset["x"], dataset["y"]
     selected = np.concatenate([split["train"], split["val"], split["test"]])
     nclasses = int(len(np.unique(y[selected])))
-    model = build_tsmnet(project_root, x.shape[1], x.shape[2], nclasses,
-                         domains[selected], bnorm=bnorm,
-                         temporal_filters=temporal_filters,
-                         spatial_filters=spatial_filters,
-                         subspacedims=subspacedims,
-                         temp_kernel=temp_kernel,
-                         device=device)
-    optimizer = make_optimizer(model, lr=lr, weight_decay=weight_decay)
+    if model_type == "tsmnet":
+        model = build_tsmnet(project_root, x.shape[1], x.shape[2], nclasses,
+                             domains[selected], bnorm=bnorm,
+                             temporal_filters=temporal_filters,
+                             spatial_filters=spatial_filters,
+                             subspacedims=subspacedims,
+                             temp_kernel=temp_kernel,
+                             device=device)
+    elif model_type == "eegconformer":
+        model = build_eegconformer(x.shape[1], x.shape[2], nclasses,
+                                   temporal_kernel=temp_kernel).to(device)
+        target_adapt = False
+    else:
+        raise ValueError("Unknown model_type: {}".format(model_type))
+    optimizer = make_optimizer(model, lr=lr, weight_decay=weight_decay,
+                               model_type=model_type)
     loss_fn = torch.nn.CrossEntropyLoss()
 
     train_ds = EEGWindowDataset(x, y, domains, split["train"], augment=augment)
+    train_eval_ds = EEGWindowDataset(x, y, domains, split["train"], augment=False)
     val_ds = EEGWindowDataset(x, y, domains, split["val"], augment=False)
     test_ds = EEGWindowDataset(x, y, domains, split["test"], augment=False)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=False)
+    train_eval_loader = DataLoader(train_eval_ds, batch_size=batch_size, shuffle=False)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
@@ -217,9 +257,10 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    refit_batchnorm(model, x, y, domains, split["train"], split["test"], device,
-                    target_adapt=target_adapt)
-    train_metrics = evaluate(model, train_loader, device)
+    if model_type == "tsmnet":
+        refit_batchnorm(model, x, y, domains, split["train"], split["test"], device,
+                        target_adapt=target_adapt)
+    train_metrics = evaluate(model, train_eval_loader, device)
     val_metrics = evaluate(model, val_loader, device)
     test_metrics = evaluate(model, test_loader, device)
 
