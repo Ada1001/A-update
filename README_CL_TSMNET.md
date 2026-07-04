@@ -1,12 +1,12 @@
 # TSMNet Cognitive-load Reproduction
 
-The original TSMNet implementation is kept under `TSMNet/`. The new code in `src/cl_tsmnet/` adapts it to the three local cognitive-load EEG datasets without changing the model architecture.
+The original TSMNet implementation is kept under `TSMNet/`. The new code in `src/cl_tsmnet/` adapts it and the local EEG-Conformer/EEGNet baselines to the three local cognitive-load EEG datasets.
 
 Main entry points:
 
 - `inspect_datasets.py`: build or load preprocessed windows and print dataset statistics
 - `inspect_datasets.py --protocol ...`: print exact source/target/train/validation/test counts for a planned split
-- `run_experiment.py`: run TSMNet or EEG-Conformer under `single_session`, `cog_multi_session`, or `loso`
+- `run_experiment.py`: run TSMNet, EEG-Conformer, or EEGNet under `single_session`, `cog_multi_session`, or `loso`
 - `run_batch_experiments.py`: run multiple datasets, protocols, models, and COG-BCI paradigms from one command
 - `DATASET_DESCRIPTION.md`: detailed dataset parsing, channel filtering, labels, preprocessing, and protocol notes
 
@@ -18,6 +18,6 @@ Outputs are written per protocol/model directory. If `--cache` is omitted, cache
 
 By default, `spddsbn` performs the TSMNet-style unsupervised target-domain BN refit using target windows without labels. Pass `--no-target-adapt` to disable this; the `target_adapt` column is saved in `summary.csv`.
 
-Use `--model eegconformer` to run the EEG-Conformer baseline. EEG-Conformer has no cross-domain adaptation in this project, so target-domain windows are used only for final testing and `target_adapt` is always `False`.
+Use `--model eegconformer` or `--model eegnet` to run non-adaptive baseline models. EEG-Conformer and EEGNet have no cross-domain adaptation in this project, so target-domain windows are used only for final testing and `target_adapt` is always `False`.
 
 Cache files are literal filtered/resampled window datasets. Rebuild old caches once because older caches may contain record-level standardization and are intentionally rejected by the strict loader. Name caches by dataset, paradigm, subject scope, and sampling rate, for example `cog_nback_all_250hz_1s.npz` or `stew_all_128hz_1s.npz`.

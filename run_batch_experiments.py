@@ -15,8 +15,8 @@ def parse_args():
                         help="Comma-separated: stew,eegmat,cog-bci")
     parser.add_argument("--protocols", default="single_session,loso",
                         help="Comma-separated: single_session,cog_multi_session,loso")
-    parser.add_argument("--models", default="tsmnet,eegconformer",
-                        help="Comma-separated: tsmnet,eegconformer")
+    parser.add_argument("--models", default="tsmnet,eegconformer,eegnet",
+                        help="Comma-separated: tsmnet,eegconformer,eegnet")
     parser.add_argument("--cog-paradigms", default="nback,matb",
                         help="Comma-separated COG-BCI paradigms.")
     parser.add_argument("--data-root", default="data")
@@ -34,6 +34,10 @@ def parse_args():
     parser.add_argument("--single-val-size", type=float, default=0.125)
     parser.add_argument("--test-size", type=float, default=0.2)
     parser.add_argument("--bnorm", default="spddsbn", choices=["spddsbn", "spdbn", "none"])
+    parser.add_argument("--eegnet-temporal-filters", type=int, default=8)
+    parser.add_argument("--eegnet-spatial-filters", type=int, default=2)
+    parser.add_argument("--eegnet-dropout", type=float, default=0.5)
+    parser.add_argument("--eegnet-avgpool-factor", type=int, default=4)
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--no-augment", action="store_true")
     parser.add_argument("--no-target-adapt", action="store_true")
@@ -80,6 +84,13 @@ def main():
                         cmd.extend(["--cog-paradigm", paradigm])
                     if model == "tsmnet":
                         cmd.extend(["--bnorm", args.bnorm])
+                    if model == "eegnet":
+                        cmd.extend([
+                            "--eegnet-temporal-filters", str(args.eegnet_temporal_filters),
+                            "--eegnet-spatial-filters", str(args.eegnet_spatial_filters),
+                            "--eegnet-dropout", str(args.eegnet_dropout),
+                            "--eegnet-avgpool-factor", str(args.eegnet_avgpool_factor),
+                        ])
                     if args.rebuild_cache:
                         cmd.append("--rebuild-cache")
                     if args.no_augment:

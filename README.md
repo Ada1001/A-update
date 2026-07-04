@@ -1,6 +1,6 @@
-# TSMNet and EEG-Conformer Experiment Commands
+# TSMNet, EEG-Conformer, and EEGNet Experiment Commands
 
-This file lists the full commands for running TSMNet and EEG-Conformer experiments on STEW, EEGMAT, and COG-BCI.
+This file lists the full commands for running TSMNet, EEG-Conformer, and EEGNet experiments on STEW, EEGMAT, and COG-BCI.
 
 Before formal training, rebuild strict caches once and inspect the split to confirm sampling rate, subject scope, train/validation/test counts, and subject-disjoint validation where applicable. Older caches with record-level standardization are rejected by the loader.
 
@@ -116,12 +116,32 @@ python run_experiment.py --dataset eegmat --protocol loso --cache outputs/cache/
 
 EEG-Conformer has no cross-domain adaptation in this project. Target-domain windows are used only for final testing.
 
+Use `--model eegconformer` with any dataset/protocol command above.
+
+## EEGNet Baseline
+
+EEGNet has no cross-domain adaptation in this project. Target-domain windows are used only for final testing.
+
+Use `--model eegnet` with any dataset/protocol command above. Examples:
+
+```powershell
+python run_experiment.py --model eegnet --dataset stew --protocol loso --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model eegnet --dataset eegmat --protocol single_session --target-fs 250 --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model eegnet --dataset cog-bci --cog-paradigm nback --protocol cog_multi_session --target-fs 250 --epochs 30 --batch-size 64
+```
+
 ## Batch Runs
 
 Run multiple datasets, protocols, models, and COG-BCI paradigms in one command:
 
 ```powershell
-python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models tsmnet,eegconformer --epochs 30 --batch-size 64
+python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models tsmnet,eegconformer,eegnet --epochs 30 --batch-size 64
 ```
 
 Preview commands without running:

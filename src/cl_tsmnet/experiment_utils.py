@@ -54,7 +54,9 @@ def default_cache_path(dataset, protocol, cog_paradigm="nback", subject=None,
 
 
 def run_tag(model, bnorm):
-    return bnorm if model == "tsmnet" else "eegconformer"
+    if model == "tsmnet":
+        return bnorm
+    return model
 
 
 def run_directory_name(dataset_name, protocol, model, bnorm):

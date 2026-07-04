@@ -162,6 +162,21 @@ def build_eegconformer(nchannels, nsamples, nclasses, temporal_kernel=25,
     )
 
 
+def build_eegnet(nchannels, nsamples, nclasses, temporal_filters=8,
+                 spatial_filters=2, dropout=0.5, avgpool_factor=4):
+    from .eegnet import EEGNet
+
+    return EEGNet(
+        nchannels=int(nchannels),
+        nsamples=int(nsamples),
+        nclasses=int(nclasses),
+        num_temporal_filts=int(temporal_filters),
+        num_spatial_filts=int(spatial_filters),
+        dropout=float(dropout),
+        avgpool_factor=int(avgpool_factor),
+    )
+
+
 def make_optimizer(model, lr=1e-3, weight_decay=1e-4, model_type="tsmnet"):
     if model_type != "tsmnet":
         return torch.optim.Adam(model.parameters(), lr=float(lr),
@@ -259,7 +274,9 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     model_type="tsmnet",
                     temporal_filters=4, spatial_filters=40, subspacedims=20,
                     temp_kernel=25, seed=42, target_adapt=True,
-                    artifact_z=None):
+                    artifact_z=None, eegnet_temporal_filters=8,
+                    eegnet_spatial_filters=2, eegnet_dropout=0.5,
+                    eegnet_avgpool_factor=4):
     torch.manual_seed(int(seed))
     np.random.seed(int(seed))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -287,6 +304,13 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
     elif model_type == "eegconformer":
         model = build_eegconformer(x.shape[1], x.shape[2], nclasses,
                                    temporal_kernel=temp_kernel).to(device)
+        target_adapt = False
+    elif model_type == "eegnet":
+        model = build_eegnet(x.shape[1], x.shape[2], nclasses,
+                             temporal_filters=eegnet_temporal_filters,
+                             spatial_filters=eegnet_spatial_filters,
+                             dropout=eegnet_dropout,
+                             avgpool_factor=eegnet_avgpool_factor).to(device)
         target_adapt = False
     else:
         raise ValueError("Unknown model_type: {}".format(model_type))

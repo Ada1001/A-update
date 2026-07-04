@@ -21,6 +21,8 @@ def _model_label(args):
         return args.model_name
     if args.model == "eegconformer":
         return "eegconformer"
+    if args.model == "eegnet":
+        return "eegnet"
     if args.bnorm == "spddsbn":
         return "tsmnet_spddsbn"
     if args.bnorm == "spdbn":
@@ -64,7 +66,7 @@ def parse_args():
     parser.add_argument("--cog-paradigm", choices=["nback", "matb"], default="nback")
     parser.add_argument("--protocol", choices=["single_session", "cog_multi_session", "loso"],
                         required=True)
-    parser.add_argument("--model", choices=["tsmnet", "eegconformer"], default="tsmnet")
+    parser.add_argument("--model", choices=["tsmnet", "eegconformer", "eegnet"], default="tsmnet")
     parser.add_argument("--subject", type=int, default=None,
                         help="Evaluate one subject only. Default: run all subjects.")
     parser.add_argument("--cache", default=None,
@@ -86,6 +88,10 @@ def parse_args():
     parser.add_argument("--spatial-filters", type=int, default=40)
     parser.add_argument("--subspacedims", type=int, default=20)
     parser.add_argument("--temp-kernel", type=int, default=25)
+    parser.add_argument("--eegnet-temporal-filters", type=int, default=8)
+    parser.add_argument("--eegnet-spatial-filters", type=int, default=2)
+    parser.add_argument("--eegnet-dropout", type=float, default=0.5)
+    parser.add_argument("--eegnet-avgpool-factor", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-size", type=float, default=0.2,
                         help="Validation fraction for LOSO source subjects and COG fallback splits.")
@@ -180,6 +186,10 @@ def main():
             seed=args.seed + int(subject),
             target_adapt=target_adapt,
             artifact_z=artifact_z,
+            eegnet_temporal_filters=args.eegnet_temporal_filters,
+            eegnet_spatial_filters=args.eegnet_spatial_filters,
+            eegnet_dropout=args.eegnet_dropout,
+            eegnet_avgpool_factor=args.eegnet_avgpool_factor,
         )
         row = {
             "dataset": dataset["name"],
@@ -241,6 +251,10 @@ def main():
             "target_adapt": target_adapt,
             "augment": augment,
             "artifact_z": "" if artifact_z is None else artifact_z,
+            "eegnet_temporal_filters": args.eegnet_temporal_filters if args.model == "eegnet" else "",
+            "eegnet_spatial_filters": args.eegnet_spatial_filters if args.model == "eegnet" else "",
+            "eegnet_dropout": args.eegnet_dropout if args.model == "eegnet" else "",
+            "eegnet_avgpool_factor": args.eegnet_avgpool_factor if args.model == "eegnet" else "",
             "val_size": args.val_size,
             "single_val_size": args.single_val_size,
             "test_size": args.test_size,
