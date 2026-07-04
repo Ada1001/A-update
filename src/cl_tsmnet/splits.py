@@ -47,18 +47,18 @@ def _subject_holdout_validation_split(source, meta, val_size, seed):
     source = np.asarray(source, dtype=np.int64)
     subjects = np.unique(meta.iloc[source]["subject"].values.astype(np.int64))
     if len(subjects) < 2:
-        return None
+        raise ValueError("LOSO subject-level validation needs at least two source subjects")
     rng = np.random.RandomState(seed)
     shuffled = np.array(subjects, copy=True)
     rng.shuffle(shuffled)
-    n_val = max(1, int(round(len(shuffled) * float(val_size))))
+    n_val = max(1, int(np.ceil(len(shuffled) * float(val_size))))
     n_val = min(n_val, len(shuffled) - 1)
     val_subjects = set(int(s) for s in shuffled[:n_val])
     subject_arr = meta["subject"].values.astype(np.int64)
     val = source[np.isin(subject_arr[source], np.asarray(sorted(val_subjects)))]
     train = source[~np.isin(subject_arr[source], np.asarray(sorted(val_subjects)))]
     if len(train) == 0 or len(val) == 0:
-        return None
+        raise RuntimeError("Invalid LOSO subject validation split")
     return train, val
 
 
@@ -92,11 +92,7 @@ def make_split(dataset, protocol, eval_subject, seed=42, val_size=0.2,
     elif protocol == "loso":
         test = np.flatnonzero(subject == int(eval_subject))
         source = np.flatnonzero(subject != int(eval_subject))
-        subject_split = _subject_holdout_validation_split(source, meta, val_size, seed + 1)
-        if subject_split is None:
-            train, val = _stratified_split(source, y, val_size, seed + 1)
-        else:
-            train, val = subject_split
+        train, val = _subject_holdout_validation_split(source, meta, val_size, seed + 1)
     else:
         raise ValueError("Unknown protocol: {}".format(protocol))
 
