@@ -227,33 +227,6 @@ def evaluate(model, loader, device, return_predictions=False):
     return metrics
 
 
-def aggregate_recording_metrics(pred_metrics, meta):
-    """Average window probabilities within each subject/session/task record."""
-    if "indices" not in pred_metrics or len(pred_metrics["indices"]) == 0:
-        return {"accuracy": np.nan, "balanced_accuracy": np.nan,
-                "f1": np.nan, "auc": np.nan, "n_groups": 0}
-    frame = meta.iloc[pred_metrics["indices"]].copy().reset_index(drop=True)
-    frame["_row"] = np.arange(len(frame))
-    y_group, pred_group, prob_group = [], [], []
-    group_cols = ["subject", "session", "paradigm", "task"]
-    for _, group in frame.groupby(group_cols, sort=True):
-        rows = group["_row"].values.astype(np.int64)
-        labels = pred_metrics["y_true"][rows]
-        unique_labels = np.unique(labels)
-        if len(unique_labels) != 1:
-            continue
-        prob = np.mean(pred_metrics["y_prob"][rows], axis=0)
-        y_group.append(int(unique_labels[0]))
-        prob_group.append(prob)
-        pred_group.append(int(np.argmax(prob)))
-    if not y_group:
-        return {"accuracy": np.nan, "balanced_accuracy": np.nan,
-                "f1": np.nan, "auc": np.nan, "n_groups": 0}
-    metrics = _metrics_from_arrays(y_group, pred_group, prob_group)
-    metrics["n_groups"] = int(len(y_group))
-    return metrics
-
-
 def refit_batchnorm(model, x, y, domains, train_idx, test_idx, device,
                     target_adapt=True, normalizer=None):
     model.eval()
@@ -370,12 +343,9 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
     if model_type == "tsmnet":
         refit_batchnorm(model, x, y, domains, split["train"], split["test"], device,
                         target_adapt=target_adapt, normalizer=normalizer)
-    train_metrics = evaluate(model, train_eval_loader, device, return_predictions=True)
-    val_metrics = evaluate(model, val_loader, device, return_predictions=True)
-    test_metrics = evaluate(model, test_loader, device, return_predictions=True)
-    train_group_metrics = aggregate_recording_metrics(train_metrics, dataset["meta"])
-    val_group_metrics = aggregate_recording_metrics(val_metrics, dataset["meta"])
-    test_group_metrics = aggregate_recording_metrics(test_metrics, dataset["meta"])
+    train_metrics = evaluate(model, train_eval_loader, device)
+    val_metrics = evaluate(model, val_loader, device)
+    test_metrics = evaluate(model, test_loader, device)
 
     if output_dir:
         if not os.path.exists(output_dir):
@@ -387,9 +357,6 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         "train": train_metrics,
         "val": val_metrics,
         "test": test_metrics,
-        "train_group": train_group_metrics,
-        "val_group": val_group_metrics,
-        "test_group": test_group_metrics,
         "epochs_ran": len(history),
         "best_epoch": int(best_epoch) if best_epoch is not None else len(history),
         "best_val_loss": float(best_loss),

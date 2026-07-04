@@ -168,7 +168,7 @@ python run_experiment.py --model eegconformer --dataset cog-bci --cog-paradigm m
 - Cache construction does not use full-recording standardization. Robust normalization is fitted from source-domain training windows inside each split, then applied to validation and target/test windows.
 - Artifact-window rejection is off by default for the formal protocol so the target/test set remains fixed. Use `--artifact-z <value>` only for an explicitly reported ablation.
 - `single_session` uses contiguous time blocks within each task record; `cog_multi_session` uses COG-BCI S1/S2/S3 as train/validation/test; `loso` randomly selects `ceil(20% * source_subjects)` source subjects for validation and uses the remaining source subjects for training.
-- `aggregate_summary.csv` reports recording/task-level metrics by default, after averaging window probabilities within each `(subject, session, paradigm, task)`. `window_aggregate_summary.csv` keeps the window-level aggregate for comparison.
+- `aggregate_summary.csv` reports window-level test metrics, which are the primary metrics for this project.
 - Full-dataset COG-BCI caches can take time to build because each subject zip is decompressed and read from EEGLAB `.set/.fdt` files.
 - Outputs are saved under `outputs/<model>/<dataset>_<protocol>_<model-or-bnorm>/`.
-- `summary.csv` stores per-subject/fold raw results, including window-level `test_*` metrics and recording/task-level `test_group_*` metrics.
+- `summary.csv` stores per-subject/fold raw window-level train/validation/test results.

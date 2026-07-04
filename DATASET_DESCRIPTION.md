@@ -45,7 +45,7 @@ This project uses 1 s non-overlapping windows for all datasets. Cache constructi
 
 ## Evaluation Level
 
-The raw model prediction is produced per 1 s window. For rigorous reporting, the project now also computes recording/task-level metrics. Windows sharing the same `(subject, session, paradigm, task)` are aggregated by averaging class probabilities, then the aggregated label is used to compute `*_group_acc`, `*_group_bacc`, `*_group_f1`, and `*_group_auc`. `aggregate_summary.csv` reports these recording/task-level test metrics by default. Window-level metrics remain in `summary.csv` as `test_acc`, `test_bacc`, `test_f1`, and `test_auc`, and `window_aggregate_summary.csv` summarizes them for comparison.
+Metrics are computed at the 1 s window level, which is the standard reporting unit for many EEG workload-classification experiments using fixed-length windows. `summary.csv` stores per-subject/fold window-level metrics, and `aggregate_summary.csv` reports the mean +/- standard deviation of window-level test metrics across evaluated subjects/folds.
 
 ## Split Count Inspection
 
@@ -88,8 +88,7 @@ Cache files should match the loaded scope. For example, do not reuse a `sub01` C
 
 ## Output Files
 
-- `summary.csv`: one raw row per evaluated subject/fold. It keeps split sizes after source-normalized artifact rejection, `epochs_ran`, `best_epoch`, `best_val_loss`, window-level metrics, and recording/task-level group metrics.
+- `summary.csv`: one raw row per evaluated subject/fold. It keeps split sizes after optional artifact rejection, `epochs_ran`, `best_epoch`, `best_val_loss`, and window-level train/validation/test metrics.
 - `subject_##/history.csv`: epoch-level training history with `is_best_epoch=True` on the selected best validation epoch.
 - `subject_##/model.pt`: the model state restored from the best validation epoch, then evaluated and saved.
-- `aggregate_summary.csv`: protocol-level recording/task-level summary with columns `dataset, model, protocol, metric_level, n, accuracy, balanced_accuracy, f1, auc`. Metrics are formatted as `mean +/- std` with four decimals, for example `0.7539 +/- 0.0956`.
-- `window_aggregate_summary.csv`: the same aggregate format using window-level test metrics for comparison and ablation reporting.
+- `aggregate_summary.csv`: protocol-level window-level summary with columns `dataset, model, protocol, n, accuracy, balanced_accuracy, f1, auc`. Metrics are formatted as `mean +/- std` with four decimals, for example `0.7539 +/- 0.0956`.

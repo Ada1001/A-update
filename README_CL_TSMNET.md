@@ -13,7 +13,7 @@ The pipeline uses 1 s non-overlapping windows. Cache construction performs only 
 
 Default splits are leakage-conscious. `single_session` uses contiguous time blocks within each task record, approximately 64%/16%/20% train/validation/test. `cog_multi_session` uses COG-BCI session 1 for training, session 2 for validation, and session 3 for target/test. `loso` leaves one subject as target/test, then randomly selects `ceil(20% * source_subjects)` source subjects for validation by default; the remaining source subjects are used for training.
 
-Outputs are written per protocol/model directory. `summary.csv` stores one raw row per evaluated subject/fold, including `best_epoch`, window-level `test_*` metrics, and recording/task-level `test_group_*` metrics. `aggregate_summary.csv` uses the stricter recording/task-level metrics by default and stores mean +/- standard deviation with four decimals. `window_aggregate_summary.csv` keeps the old window-level aggregate for comparison.
+Outputs are written per protocol/model directory. `summary.csv` stores one raw row per evaluated subject/fold, including `best_epoch` and window-level train/validation/test metrics. `aggregate_summary.csv` stores the protocol-level window-level test mean +/- standard deviation with four decimals.
 
 By default, `spddsbn` performs the TSMNet-style unsupervised target-domain BN refit using target windows without labels. Pass `--no-target-adapt` to disable this; the `target_adapt` column is saved in `summary.csv`.
 
