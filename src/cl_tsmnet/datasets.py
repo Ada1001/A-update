@@ -279,8 +279,20 @@ def save_npz(dataset, path):
     )
 
 
+def _load_npz_arrays(path, allow_pickle=False):
+    with np.load(path, allow_pickle=allow_pickle) as data:
+        return {key: data[key] for key in data.files}
+
+
 def load_npz(path):
-    data = np.load(path, allow_pickle=False)
+    legacy_object_cache = False
+    try:
+        data = _load_npz_arrays(path, allow_pickle=False)
+    except ValueError as exc:
+        if "Object arrays cannot be loaded" not in str(exc):
+            raise
+        data = _load_npz_arrays(path, allow_pickle=True)
+        legacy_object_cache = True
     meta = pd.DataFrame({
         "label": data["label"].astype(np.int64),
         "subject": data["subject"].astype(np.int64),
@@ -290,7 +302,7 @@ def load_npz(path):
         "start_sample": data["start_sample"].astype(np.int64),
     })
     preprocess_standardized = None
-    if "preprocess_standardized" in data.files:
+    if "preprocess_standardized" in data:
         preprocess_standardized = bool(data["preprocess_standardized"][0])
     return {
         "name": str(data["name"][0]),
@@ -301,6 +313,7 @@ def load_npz(path):
         "fs": float(data["fs"][0]),
         "label_names": {},
         "preprocess_standardized": preprocess_standardized,
+        "legacy_object_cache": legacy_object_cache,
     }
 
 
@@ -372,6 +385,8 @@ def load_dataset(name, data_root="data", cache=None, rebuild_cache=False,
             subjects=kwargs.get("subjects"), sessions=kwargs.get("sessions"),
             cog_paradigm=cog_paradigm,
         )
+        if dataset.get("legacy_object_cache"):
+            save_npz(dataset, cache)
         return dataset
     if kwargs.get("target_fs") is None:
         kwargs["target_fs"] = DEFAULT_TARGET_FS[name]
