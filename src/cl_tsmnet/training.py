@@ -5,9 +5,14 @@ import warnings
 
 import numpy as np
 import torch
+from scipy import signal
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, roc_auc_score
 from sklearn.exceptions import UndefinedMetricWarning
 from torch.utils.data import DataLoader, Dataset
+
+
+BFGCN_FEATURE_BANDS = [(1.0, 4.0), (4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 45.0)]
+BFGCN_PLV_BANDS = [(4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 45.0)]
 
 
 class EEGWindowDataset(Dataset):
@@ -177,6 +182,23 @@ def build_eegnet(nchannels, nsamples, nclasses, temporal_filters=8,
     )
 
 
+def build_bfgcn(nchannels, nclasses, kadj=2, num_out=16, att_hidden=16,
+                classifier_hidden=32, avgpool=2, dropout=0.0):
+    from .bfgcn import BFGCN
+
+    return BFGCN(
+        nclass=int(nclasses),
+        xdim=[int(nchannels), len(BFGCN_FEATURE_BANDS)],
+        kadj=int(kadj),
+        num_out=int(num_out),
+        att_hidden=int(att_hidden),
+        att_plv_hidden=int(nchannels),
+        classifier_hidden=int(classifier_hidden),
+        avgpool=int(avgpool),
+        dropout=float(dropout),
+    )
+
+
 def make_optimizer(model, lr=1e-3, weight_decay=1e-4, model_type="tsmnet"):
     if model_type != "tsmnet":
         return torch.optim.Adam(model.parameters(), lr=float(lr),
@@ -242,6 +264,111 @@ def evaluate(model, loader, device, return_predictions=False):
     return metrics
 
 
+def _valid_band(band, fs):
+    low, high = float(band[0]), float(band[1])
+    nyq = float(fs) / 2.0
+    high = min(high, nyq - 1e-4)
+    return low, high
+
+
+def _bfgcn_bandpower_features(windows, fs):
+    windows = np.asarray(windows, dtype=np.float32)
+    freqs = np.fft.rfftfreq(windows.shape[-1], d=1.0 / float(fs))
+    spectrum = np.fft.rfft(windows, axis=-1)
+    power = (np.abs(spectrum) ** 2).astype(np.float32)
+    features = []
+    for band in BFGCN_FEATURE_BANDS:
+        low, high = _valid_band(band, fs)
+        mask = (freqs >= low) & (freqs < high)
+        if not np.any(mask):
+            values = np.mean(power, axis=-1)
+        else:
+            values = np.mean(power[..., mask], axis=-1)
+        features.append(np.log(values + 1e-6))
+    return np.stack(features, axis=-1).astype(np.float32)
+
+
+def _safe_bandpass_batch(windows, fs, band):
+    low, high = _valid_band(band, fs)
+    nyq = float(fs) / 2.0
+    if low >= high:
+        return windows
+    sos = signal.butter(3, [low / nyq, high / nyq], btype="bandpass", output="sos")
+    if windows.shape[-1] < 24:
+        return signal.sosfilt(sos, windows, axis=-1)
+    return signal.sosfiltfilt(sos, windows, axis=-1)
+
+
+def _bfgcn_plv(windows, fs):
+    windows = np.asarray(windows, dtype=np.float32)
+    adjs = []
+    for band in BFGCN_PLV_BANDS:
+        filtered = _safe_bandpass_batch(windows, fs, band)
+        analytic = signal.hilbert(filtered, axis=-1)
+        phase = analytic / (np.abs(analytic) + 1e-8)
+        plv = np.abs(np.einsum("nct,ndt->ncd", phase, np.conj(phase)) / phase.shape[-1])
+        diag = np.arange(plv.shape[1])
+        plv[:, diag, diag] = 1.0
+        adjs.append(plv.astype(np.float32))
+    return np.stack(adjs, axis=-1).astype(np.float32)
+
+
+class BFGCNCollator:
+    def __init__(self, fs):
+        self.fs = float(fs)
+
+    def __call__(self, batch):
+        xs, ys, ds = zip(*batch)
+        windows = torch.stack(xs).numpy().astype(np.float32)
+        features = _bfgcn_bandpower_features(windows, self.fs)
+        plv = _bfgcn_plv(windows, self.fs)
+        return (
+            torch.from_numpy(features),
+            torch.from_numpy(plv),
+            torch.stack(ys).long(),
+            torch.stack(ds).long(),
+        )
+
+
+def _bfgcn_forward_logits(model, batch, device, alpha=0.0):
+    xb, adjb, yb, db = batch
+    xb = xb.to(device)
+    adjb = adjb.to(device)
+    class_logits, domain_logits = model(xb, adjb, alpha=alpha)[:2]
+    return class_logits, domain_logits, yb.to(device), db.to(device)
+
+
+def evaluate_bfgcn(model, loader, device, return_predictions=False):
+    model.eval()
+    losses, y_true, y_pred, y_prob = [], [], [], []
+    loss_fn = torch.nn.CrossEntropyLoss()
+    with torch.no_grad():
+        for batch in loader:
+            logits, _, yb, _ = _bfgcn_forward_logits(model, batch, device, alpha=0.0)
+            loss = loss_fn(logits, yb.to(logits.device))
+            losses.append(float(loss.detach().cpu().item()))
+            logits_cpu = logits.detach().cpu()
+            pred = torch.argmax(logits_cpu, dim=1).numpy()
+            prob = torch.softmax(logits_cpu, dim=1).numpy()
+            y_pred.extend(pred.tolist())
+            y_prob.extend(prob.tolist())
+            y_true.extend(yb.detach().cpu().numpy().tolist())
+    metrics = _metrics_from_arrays(y_true, y_pred, y_prob)
+    metrics.update({"loss": float(np.mean(losses)) if losses else np.nan})
+    if return_predictions:
+        metrics["y_true"] = np.asarray(y_true, dtype=np.int64)
+        metrics["y_pred"] = np.asarray(y_pred, dtype=np.int64)
+        metrics["y_prob"] = np.asarray(y_prob, dtype=np.float32)
+        metrics["indices"] = np.asarray(loader.dataset.indices, dtype=np.int64)
+    return metrics
+
+
+def _cycle_loader(loader):
+    while True:
+        for batch in loader:
+            yield batch
+
+
 def refit_batchnorm(model, x, y, domains, train_idx, test_idx, device,
                     target_adapt=True, normalizer=None):
     model.eval()
@@ -276,7 +403,10 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     temp_kernel=25, seed=42, target_adapt=True,
                     artifact_z=None, eegnet_temporal_filters=8,
                     eegnet_spatial_filters=2, eegnet_dropout=0.5,
-                    eegnet_avgpool_factor=4):
+                    eegnet_avgpool_factor=4, bfgcn_kadj=2,
+                    bfgcn_num_out=16, bfgcn_att_hidden=16,
+                    bfgcn_classifier_hidden=32, bfgcn_avgpool=2,
+                    bfgcn_dropout=0.0, bfgcn_domain_weight=1.0):
     torch.manual_seed(int(seed))
     np.random.seed(int(seed))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -312,6 +442,14 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                              dropout=eegnet_dropout,
                              avgpool_factor=eegnet_avgpool_factor).to(device)
         target_adapt = False
+    elif model_type == "bfgcn":
+        model = build_bfgcn(x.shape[1], nclasses,
+                            kadj=bfgcn_kadj,
+                            num_out=bfgcn_num_out,
+                            att_hidden=bfgcn_att_hidden,
+                            classifier_hidden=bfgcn_classifier_hidden,
+                            avgpool=bfgcn_avgpool,
+                            dropout=bfgcn_dropout).to(device)
     else:
         raise ValueError("Unknown model_type: {}".format(model_type))
     optimizer = make_optimizer(model, lr=lr, weight_decay=weight_decay,
@@ -326,27 +464,76 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                               normalizer=normalizer)
     test_ds = EEGWindowDataset(x, y, domains, split["test"], augment=False,
                                normalizer=normalizer)
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=False)
-    train_eval_loader = DataLoader(train_eval_ds, batch_size=batch_size, shuffle=False)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
+    if model_type == "bfgcn":
+        collate = BFGCNCollator(dataset["fs"])
+        target_domain_ds = EEGWindowDataset(
+            x, y, domains, split["test"], augment=False, normalizer=normalizer
+        )
+        drop_source = len(train_ds) > int(batch_size)
+        drop_target = len(target_domain_ds) > int(batch_size)
+        train_loader = DataLoader(
+            train_ds, batch_size=batch_size, shuffle=True,
+            drop_last=drop_source, collate_fn=collate,
+        )
+        target_domain_loader = DataLoader(
+            target_domain_ds, batch_size=batch_size, shuffle=True,
+            drop_last=drop_target, collate_fn=collate,
+        )
+        train_eval_loader = DataLoader(
+            train_eval_ds, batch_size=batch_size, shuffle=False, collate_fn=collate
+        )
+        val_loader = DataLoader(
+            val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate
+        )
+        test_loader = DataLoader(
+            test_ds, batch_size=batch_size, shuffle=False, collate_fn=collate
+        )
+    else:
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=False)
+        train_eval_loader = DataLoader(train_eval_ds, batch_size=batch_size, shuffle=False)
+        val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+        test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
     best_state, best_loss, best_epoch, bad_epochs = None, float("inf"), None, 0
     history = []
+    target_iter = _cycle_loader(target_domain_loader) if model_type == "bfgcn" else None
+    domain_loss_fn = torch.nn.NLLLoss()
     for epoch in range(1, int(epochs) + 1):
         model.train()
         batch_losses = []
-        for xb, yb, db in train_loader:
-            xb = xb.to(device)
-            yb = yb.to(device)
-            db = db.to(device)
+        for step, batch in enumerate(train_loader):
             optimizer.zero_grad()
-            logits = _forward_logits(model, xb, db)
-            loss = loss_fn(logits, yb.to(logits.device))
+            if model_type == "bfgcn":
+                progress = (float(epoch - 1) + float(step) / max(1, len(train_loader))) / max(1, int(epochs))
+                alpha = float(2.0 / (1.0 + np.exp(-10.0 * progress)) - 1.0) if target_adapt else 0.0
+                logits, domain_src, yb, _ = _bfgcn_forward_logits(
+                    model, batch, device, alpha=alpha
+                )
+                class_loss = loss_fn(logits, yb.to(logits.device))
+                loss = class_loss
+                if target_adapt:
+                    target_batch = next(target_iter)
+                    _, domain_tgt, _, _ = _bfgcn_forward_logits(
+                        model, target_batch, device, alpha=alpha
+                    )
+                    domain_logits = torch.cat([domain_src, domain_tgt], dim=0)
+                    domain_labels = torch.cat([
+                        torch.zeros(domain_src.shape[0], dtype=torch.long, device=device),
+                        torch.ones(domain_tgt.shape[0], dtype=torch.long, device=device),
+                    ])
+                    domain_loss = domain_loss_fn(domain_logits, domain_labels)
+                    loss = class_loss + float(bfgcn_domain_weight) * domain_loss
+            else:
+                xb, yb, db = batch
+                xb = xb.to(device)
+                yb = yb.to(device)
+                db = db.to(device)
+                logits = _forward_logits(model, xb, db)
+                loss = loss_fn(logits, yb.to(logits.device))
             loss.backward()
             optimizer.step()
             batch_losses.append(float(loss.detach().cpu().item()))
-        val_metrics = evaluate(model, val_loader, device)
+        val_metrics = evaluate_bfgcn(model, val_loader, device) if model_type == "bfgcn" else evaluate(model, val_loader, device)
         row = {"epoch": epoch, "train_loss": float(np.mean(batch_losses)),
                "val_loss": val_metrics["loss"],
                "val_bacc": val_metrics["balanced_accuracy"]}
@@ -367,9 +554,14 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
     if model_type == "tsmnet":
         refit_batchnorm(model, x, y, domains, split["train"], split["test"], device,
                         target_adapt=target_adapt, normalizer=normalizer)
-    train_metrics = evaluate(model, train_eval_loader, device)
-    val_metrics = evaluate(model, val_loader, device)
-    test_metrics = evaluate(model, test_loader, device)
+    if model_type == "bfgcn":
+        train_metrics = evaluate_bfgcn(model, train_eval_loader, device)
+        val_metrics = evaluate_bfgcn(model, val_loader, device)
+        test_metrics = evaluate_bfgcn(model, test_loader, device)
+    else:
+        train_metrics = evaluate(model, train_eval_loader, device)
+        val_metrics = evaluate(model, val_loader, device)
+        test_metrics = evaluate(model, test_loader, device)
 
     if output_dir:
         if not os.path.exists(output_dir):

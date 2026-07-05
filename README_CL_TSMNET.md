@@ -1,12 +1,12 @@
 # TSMNet Cognitive-load Reproduction
 
-The original TSMNet implementation is kept under `TSMNet/`. The new code in `src/cl_tsmnet/` adapts it and the local EEG-Conformer/EEGNet baselines to the three local cognitive-load EEG datasets.
+The original TSMNet implementation is kept under `TSMNet/`. The new code in `src/cl_tsmnet/` adapts it and the local EEG-Conformer, EEGNet, and BF-GCN baselines to the three local cognitive-load EEG datasets.
 
 Main entry points:
 
 - `inspect_datasets.py`: build or load preprocessed windows and print dataset statistics
 - `inspect_datasets.py --protocol ...`: print exact source/target/train/validation/test counts for a planned split
-- `run_experiment.py`: run TSMNet, EEG-Conformer, or EEGNet under `single_session`, `cog_multi_session`, or `loso`
+- `run_experiment.py`: run TSMNet, EEG-Conformer, EEGNet, or BF-GCN under `single_session`, `cog_multi_session`, or `loso`
 - `run_batch_experiments.py`: run multiple datasets, protocols, models, and COG-BCI paradigms from one command
 - `DATASET_DESCRIPTION.md`: detailed dataset parsing, channel filtering, labels, preprocessing, and protocol notes
 
@@ -16,8 +16,10 @@ Default splits are leakage-conscious. `single_session` uses contiguous time bloc
 
 Outputs are written per protocol/model directory. If `--cache` is omitted, caches are automatically named under `outputs/cache/` by dataset, paradigm, protocol, subject scope, sessions, and sampling rate. `summary.csv` stores one raw row per evaluated subject/fold, including `best_epoch` and window-level train/validation/test metrics. `aggregate_summary.csv` stores the protocol-level window-level test mean +/- standard deviation with four decimals. Every completed run also appends a numeric mean/std row to `outputs/master_summary.csv` by default.
 
-By default, `spddsbn` performs the TSMNet-style unsupervised target-domain BN refit using target windows without labels. Pass `--no-target-adapt` to disable this; the `target_adapt` column is saved in `summary.csv`.
+By default, `spddsbn` performs the TSMNet-style unsupervised target-domain BN refit using target windows without labels. BF-GCN uses its own domain-adversarial branch: source train windows use class labels, while unlabeled target/test windows contribute only to the domain loss. Pass `--no-target-adapt` to disable either target-domain mechanism; the `target_adapt` column is saved in `summary.csv`.
 
 Use `--model eegconformer` or `--model eegnet` to run non-adaptive baseline models. EEG-Conformer and EEGNet have no cross-domain adaptation in this project, so target-domain windows are used only for final testing and `target_adapt` is always `False`.
+
+Use `--model bfgcn` to run the BF-GCN baseline. The adapter computes 5-band log-power node features and 4-band PLV adjacency matrices from each 1 s EEG window, then trains the original-style graph branches and gradient-reversal domain classifier without changing the TSMNet adaptation path.
 
 Cache files are literal filtered/resampled window datasets. Rebuild old caches once because older caches may contain record-level standardization and are intentionally rejected by the strict loader. Name caches by dataset, paradigm, subject scope, and sampling rate, for example `cog_nback_all_250hz_1s.npz` or `stew_all_128hz_1s.npz`.

@@ -15,8 +15,8 @@ def parse_args():
                         help="Comma-separated: stew,eegmat,cog-bci")
     parser.add_argument("--protocols", default="single_session,loso",
                         help="Comma-separated: single_session,cog_multi_session,loso")
-    parser.add_argument("--models", default="tsmnet,eegconformer,eegnet",
-                        help="Comma-separated: tsmnet,eegconformer,eegnet")
+    parser.add_argument("--models", default="tsmnet,eegconformer,eegnet,bfgcn",
+                        help="Comma-separated: tsmnet,eegconformer,eegnet,bfgcn")
     parser.add_argument("--cog-paradigms", default="nback,matb",
                         help="Comma-separated COG-BCI paradigms.")
     parser.add_argument("--data-root", default="data")
@@ -38,6 +38,13 @@ def parse_args():
     parser.add_argument("--eegnet-spatial-filters", type=int, default=2)
     parser.add_argument("--eegnet-dropout", type=float, default=0.5)
     parser.add_argument("--eegnet-avgpool-factor", type=int, default=4)
+    parser.add_argument("--bfgcn-kadj", type=int, default=2)
+    parser.add_argument("--bfgcn-num-out", type=int, default=16)
+    parser.add_argument("--bfgcn-att-hidden", type=int, default=16)
+    parser.add_argument("--bfgcn-classifier-hidden", type=int, default=32)
+    parser.add_argument("--bfgcn-avgpool", type=int, default=2)
+    parser.add_argument("--bfgcn-dropout", type=float, default=0.0)
+    parser.add_argument("--bfgcn-domain-weight", type=float, default=1.0)
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--no-augment", action="store_true")
     parser.add_argument("--no-target-adapt", action="store_true")
@@ -90,6 +97,16 @@ def main():
                             "--eegnet-spatial-filters", str(args.eegnet_spatial_filters),
                             "--eegnet-dropout", str(args.eegnet_dropout),
                             "--eegnet-avgpool-factor", str(args.eegnet_avgpool_factor),
+                        ])
+                    if model == "bfgcn":
+                        cmd.extend([
+                            "--bfgcn-kadj", str(args.bfgcn_kadj),
+                            "--bfgcn-num-out", str(args.bfgcn_num_out),
+                            "--bfgcn-att-hidden", str(args.bfgcn_att_hidden),
+                            "--bfgcn-classifier-hidden", str(args.bfgcn_classifier_hidden),
+                            "--bfgcn-avgpool", str(args.bfgcn_avgpool),
+                            "--bfgcn-dropout", str(args.bfgcn_dropout),
+                            "--bfgcn-domain-weight", str(args.bfgcn_domain_weight),
                         ])
                     if args.rebuild_cache:
                         cmd.append("--rebuild-cache")

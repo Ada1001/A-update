@@ -23,6 +23,8 @@ def _model_label(args):
         return "eegconformer"
     if args.model == "eegnet":
         return "eegnet"
+    if args.model == "bfgcn":
+        return "bfgcn"
     if args.bnorm == "spddsbn":
         return "tsmnet_spddsbn"
     if args.bnorm == "spdbn":
@@ -60,13 +62,14 @@ def write_aggregate_summary(rows, path):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run TSMNet on cognitive-load EEG datasets.")
+    parser = argparse.ArgumentParser(description="Run cognitive-load EEG model experiments.")
     parser.add_argument("--dataset", choices=["stew", "eegmat", "cog-bci"], required=True)
     parser.add_argument("--data-root", default="data")
     parser.add_argument("--cog-paradigm", choices=["nback", "matb"], default="nback")
     parser.add_argument("--protocol", choices=["single_session", "cog_multi_session", "loso"],
                         required=True)
-    parser.add_argument("--model", choices=["tsmnet", "eegconformer", "eegnet"], default="tsmnet")
+    parser.add_argument("--model", choices=["tsmnet", "eegconformer", "eegnet", "bfgcn"],
+                        default="tsmnet")
     parser.add_argument("--subject", type=int, default=None,
                         help="Evaluate one subject only. Default: run all subjects.")
     parser.add_argument("--cache", default=None,
@@ -92,6 +95,13 @@ def parse_args():
     parser.add_argument("--eegnet-spatial-filters", type=int, default=2)
     parser.add_argument("--eegnet-dropout", type=float, default=0.5)
     parser.add_argument("--eegnet-avgpool-factor", type=int, default=4)
+    parser.add_argument("--bfgcn-kadj", type=int, default=2)
+    parser.add_argument("--bfgcn-num-out", type=int, default=16)
+    parser.add_argument("--bfgcn-att-hidden", type=int, default=16)
+    parser.add_argument("--bfgcn-classifier-hidden", type=int, default=32)
+    parser.add_argument("--bfgcn-avgpool", type=int, default=2)
+    parser.add_argument("--bfgcn-dropout", type=float, default=0.0)
+    parser.add_argument("--bfgcn-domain-weight", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-size", type=float, default=0.2,
                         help="Validation fraction for LOSO source subjects and COG fallback splits.")
@@ -150,7 +160,7 @@ def main():
     subjects = [args.subject] if args.subject is not None else iter_eval_subjects(
         dataset["meta"], args.protocol, dataset["name"])
     augment = (args.dataset in ["stew", "eegmat"]) and (not args.no_augment)
-    target_adapt = (not args.no_target_adapt) and args.model == "tsmnet"
+    target_adapt = (not args.no_target_adapt) and args.model in ["tsmnet", "bfgcn"]
     artifact_z = None if args.no_artifact_reject else args.artifact_z
 
     run_name = run_directory_name(dataset["name"], args.protocol, args.model, args.bnorm)
@@ -190,6 +200,13 @@ def main():
             eegnet_spatial_filters=args.eegnet_spatial_filters,
             eegnet_dropout=args.eegnet_dropout,
             eegnet_avgpool_factor=args.eegnet_avgpool_factor,
+            bfgcn_kadj=args.bfgcn_kadj,
+            bfgcn_num_out=args.bfgcn_num_out,
+            bfgcn_att_hidden=args.bfgcn_att_hidden,
+            bfgcn_classifier_hidden=args.bfgcn_classifier_hidden,
+            bfgcn_avgpool=args.bfgcn_avgpool,
+            bfgcn_dropout=args.bfgcn_dropout,
+            bfgcn_domain_weight=args.bfgcn_domain_weight,
         )
         row = {
             "dataset": dataset["name"],
@@ -255,6 +272,13 @@ def main():
             "eegnet_spatial_filters": args.eegnet_spatial_filters if args.model == "eegnet" else "",
             "eegnet_dropout": args.eegnet_dropout if args.model == "eegnet" else "",
             "eegnet_avgpool_factor": args.eegnet_avgpool_factor if args.model == "eegnet" else "",
+            "bfgcn_kadj": args.bfgcn_kadj if args.model == "bfgcn" else "",
+            "bfgcn_num_out": args.bfgcn_num_out if args.model == "bfgcn" else "",
+            "bfgcn_att_hidden": args.bfgcn_att_hidden if args.model == "bfgcn" else "",
+            "bfgcn_classifier_hidden": args.bfgcn_classifier_hidden if args.model == "bfgcn" else "",
+            "bfgcn_avgpool": args.bfgcn_avgpool if args.model == "bfgcn" else "",
+            "bfgcn_dropout": args.bfgcn_dropout if args.model == "bfgcn" else "",
+            "bfgcn_domain_weight": args.bfgcn_domain_weight if args.model == "bfgcn" else "",
             "val_size": args.val_size,
             "single_val_size": args.single_val_size,
             "test_size": args.test_size,
