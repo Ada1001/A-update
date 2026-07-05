@@ -130,8 +130,10 @@ def main():
     load_subjects = None
     if args.subject is not None and args.protocol in ["single_session", "cog_multi_session"]:
         load_subjects = [args.subject]
-    load_sessions = (1, 2, 3)
-    if args.dataset == "cog-bci" and args.protocol == "single_session":
+    load_sessions = (1,)
+    if args.dataset == "cog-bci" and args.protocol != "single_session":
+        load_sessions = (1, 2, 3)
+    elif args.dataset == "cog-bci" and args.protocol == "single_session":
         load_sessions = (1,)
     target_fs = default_target_fs(args.dataset, args.target_fs)
     cache = args.cache or default_cache_path(
