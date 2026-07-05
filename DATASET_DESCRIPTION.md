@@ -30,7 +30,7 @@ This project uses 1 s non-overlapping windows for all datasets. Cache constructi
 - Files: 29 zipped subjects, each with sessions `S1/S2/S3`
 - Original sampling rate: 500 Hz EEGLAB `.set/.fdt`
 - Zip layout handling: the loader accepts both `sub-xx/ses-Sx/eeg/...` and duplicated-root layouts such as `sub-xx/sub-xx/ses-Sx/eeg/...`, which occur in some local COG-BCI archives.
-- Retained channels: scalp EEG only; `ECG1` is removed. The EEGLAB files expose 63 channels, giving 62 EEG channels after this removal.
+- Retained channels: a fixed 62-channel scalp EEG whitelist in a fixed order. The EEGLAB files usually expose 63 channels; auxiliary/non-scalp channels are ignored so every COG-BCI subject and task has the same input shape.
 - Used paradigms only: N-Back and MAT-B
 - N-Back labels: `zeroBACK=0`, `oneBACK=1`, `twoBACK=2`
 - MAT-B labels: `MATBeasy=0`, `MATBmed=1`, `MATBdiff=2`

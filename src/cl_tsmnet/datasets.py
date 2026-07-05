@@ -8,11 +8,25 @@ import zipfile
 import numpy as np
 import pandas as pd
 
-from .preprocessing import make_windows, preprocess_eeg, useful_eeg_channels
+from .preprocessing import (
+    canonical_channel_name,
+    make_windows,
+    preprocess_eeg,
+    useful_eeg_channels,
+)
 
 
 STEW_CHANNELS = ["AF3", "F7", "F3", "FC5", "T7", "P7", "O1",
                  "O2", "P8", "T8", "FC6", "F4", "F8", "AF4"]
+COG_EEG_CHANNELS = [
+    "Fp1", "Fz", "F3", "F7", "FT9", "FC5", "FC1", "C3", "T7", "CP5",
+    "CP1", "Pz", "P3", "P7", "O1", "Oz", "O2", "P4", "P8", "TP10",
+    "CP6", "CP2", "FCz", "C4", "T8", "FT10", "FC6", "FC2", "F4", "F8",
+    "Fp2", "AF7", "AF3", "AFz", "F1", "F5", "FT7", "FC3", "C1", "C5",
+    "TP7", "CP3", "P1", "P5", "PO7", "PO3", "POz", "PO4", "PO8", "P6",
+    "P2", "CPz", "CP4", "TP8", "C6", "C2", "FC4", "FT8", "F6", "AF8",
+    "AF4", "F2",
+]
 EEGMAT_DIRNAME = "eeg-during-mental-arithmetic-tasks-1.0.0"
 COG_TASKS = {
     "nback": [("zeroBACK", 0), ("oneBACK", 1), ("twoBACK", 2)],
@@ -51,6 +65,22 @@ def _pack_dataset(name, all_x, all_rows, channels, fs, label_names):
 
 def _subject_allowed(subject, subjects):
     return subjects is None or int(subject) in set(int(s) for s in subjects)
+
+
+def _fixed_channel_picks(ch_names, required_channels, context):
+    canonical_to_index = {}
+    for idx, ch in enumerate(ch_names):
+        clean = canonical_channel_name(ch)
+        canonical_to_index.setdefault(clean, idx)
+    missing = [ch for ch in required_channels if ch not in canonical_to_index]
+    if missing:
+        raise RuntimeError(
+            "{} is missing required EEG channels {}. Available channels: {}".format(
+                context, missing, [canonical_channel_name(ch) for ch in ch_names]
+            )
+        )
+    picks = [canonical_to_index[ch] for ch in required_channels]
+    return picks, list(required_channels)
 
 
 def discover_cog_bci_zip_subjects(data_root):
@@ -206,7 +236,12 @@ def load_cog_bci(data_root, paradigm="nback", sessions=(1, 2, 3),
                     try:
                         set_path = _extract_eeglab_pair(zf, eeg_pair[0], eeg_pair[1], tmpdir)
                         raw = mne.io.read_raw_eeglab(set_path, preload=True, verbose="ERROR")
-                        picks, picked_names = useful_eeg_channels(raw.ch_names)
+                        picks, picked_names = _fixed_channel_picks(
+                            raw.ch_names, COG_EEG_CHANNELS,
+                            "COG-BCI sub-{:02d} session {} task {}".format(
+                                subject, session, task
+                            ),
+                        )
                         channels = picked_names
                         data = raw.get_data(picks=picks)
                         data, fs = preprocess_eeg(data, fs=float(raw.info["sfreq"]),
