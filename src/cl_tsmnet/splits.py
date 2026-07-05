@@ -47,7 +47,11 @@ def _subject_holdout_validation_split(source, meta, val_size, seed):
     source = np.asarray(source, dtype=np.int64)
     subjects = np.unique(meta.iloc[source]["subject"].values.astype(np.int64))
     if len(subjects) < 2:
-        raise ValueError("LOSO subject-level validation needs at least two source subjects")
+        raise ValueError(
+            "LOSO subject-level validation needs at least two source subjects; got {}. "
+            "This usually means the dataset/cache contains too few subjects for LOSO "
+            "after holding out the target subject.".format(len(subjects))
+        )
     rng = np.random.RandomState(seed)
     shuffled = np.array(subjects, copy=True)
     rng.shuffle(shuffled)

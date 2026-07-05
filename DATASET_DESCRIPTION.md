@@ -29,6 +29,7 @@ This project uses 1 s non-overlapping windows for all datasets. Cache constructi
 - Location: `data/COG-BCI`
 - Files: 29 zipped subjects, each with sessions `S1/S2/S3`
 - Original sampling rate: 500 Hz EEGLAB `.set/.fdt`
+- Zip layout handling: the loader accepts both `sub-xx/ses-Sx/eeg/...` and duplicated-root layouts such as `sub-xx/sub-xx/ses-Sx/eeg/...`, which occur in some local COG-BCI archives.
 - Retained channels: scalp EEG only; `ECG1` is removed. The EEGLAB files expose 63 channels, giving 62 EEG channels after this removal.
 - Used paradigms only: N-Back and MAT-B
 - N-Back labels: `zeroBACK=0`, `oneBACK=1`, `twoBACK=2`
@@ -84,7 +85,7 @@ By default, `spddsbn` uses TSMNet-style unsupervised target-domain adaptation: t
 
 Use `--model eegconformer` for the EEG-Conformer baseline. The implementation keeps the original model idea, convolutional patch embedding followed by Transformer encoder and fully connected classifier, but makes channel count, window length, and class count dynamic for STEW, EEGMAT, and COG-BCI. Use `--model eegnet` for the local EEGNet baseline. The project implementation keeps the original EEGNet folder's temporal convolution, depthwise spatial convolution, average pooling/dropout, depthwise temporal convolution, pointwise convolution, and fully connected classifier, while adapting input shape, channel count, window length, and class count dynamically. EEG-Conformer and EEGNet do not perform target-domain adaptation; target-domain data is never used in training or normalization refitting.
 
-Cache files should match the loaded scope. For example, do not reuse a `sub01` COG-BCI cache for a leave-one-subject-out run over all subjects. The loader checks dataset name, requested sampling rate, and strict preprocessing metadata. Older caches that contain record-level standardization must be rebuilt with `--rebuild-cache`.
+Cache files should match the loaded scope. For example, do not reuse a `sub01` COG-BCI cache for a leave-one-subject-out run over all subjects. The loader checks dataset name, requested sampling rate, strict preprocessing metadata, requested sessions, and COG-BCI subject coverage for the requested paradigm. Older caches that contain record-level standardization or incomplete subject coverage must be rebuilt with `--rebuild-cache`.
 
 If `--cache` is omitted, the scripts automatically create a cache name under `outputs/cache/`, for example `stew_loso_all_s1_128hz_1s.npz` or `cog_nback_cog_multi_session_all_s123_250hz_1s.npz`.
 

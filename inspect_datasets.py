@@ -2,7 +2,11 @@ import argparse
 
 import pandas as pd
 
-from src.cl_tsmnet.datasets import load_dataset
+from src.cl_tsmnet.datasets import (
+    discover_cog_bci_recording_subjects,
+    discover_cog_bci_zip_subjects,
+    load_dataset,
+)
 from src.cl_tsmnet.experiment_utils import default_cache_path, default_target_fs
 from src.cl_tsmnet.splits import iter_eval_subjects, make_split, split_summary
 
@@ -57,6 +61,14 @@ def main():
     print("channels({}): {}".format(len(ds["channels"]), ", ".join(ds["channels"])))
     print("labels:", pd.Series(ds["y"]).value_counts().sort_index().to_dict())
     print("subjects:", meta["subject"].nunique())
+    if args.dataset == "cog-bci":
+        zip_subjects = discover_cog_bci_zip_subjects(args.data_root)
+        recording_subjects = discover_cog_bci_recording_subjects(
+            args.data_root, paradigm=args.cog_paradigm, sessions=sessions
+        )
+        print("available COG-BCI zip subjects:", len(zip_subjects), zip_subjects)
+        print("available COG-BCI recording subjects:",
+              len(recording_subjects), recording_subjects)
     print(meta.groupby(["subject", "session", "task"]).size().head(30))
 
     if args.protocol is not None:

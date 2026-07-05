@@ -53,6 +53,61 @@ def _subject_allowed(subject, subjects):
     return subjects is None or int(subject) in set(int(s) for s in subjects)
 
 
+def discover_cog_bci_zip_subjects(data_root):
+    root = os.path.join(data_root, "COG-BCI")
+    if not os.path.isdir(root):
+        return []
+    subjects = []
+    for fname in os.listdir(root):
+        match = re.search(r"sub-(\d+)\.zip$", fname, flags=re.IGNORECASE)
+        if match is not None:
+            subjects.append(int(match.group(1)))
+    return sorted(set(subjects))
+
+
+def discover_cog_bci_recording_subjects(data_root, paradigm="nback", sessions=(1, 2, 3)):
+    if paradigm not in COG_TASKS:
+        raise ValueError("paradigm must be one of {}".format(sorted(COG_TASKS)))
+    subjects = []
+    for subject, zip_path in _discover_cog_bci_zip_paths(data_root):
+        with zipfile.ZipFile(zip_path) as zf:
+            archive_names = {name.replace("\\", "/"): name for name in zf.namelist()}
+            found = False
+            for session in sessions:
+                for task, _ in COG_TASKS[paradigm]:
+                    if _find_cog_eeg_pair(archive_names, session, task) is not None:
+                        subjects.append(subject)
+                        found = True
+                        break
+                if found:
+                    break
+    return sorted(set(subjects))
+
+
+def _discover_cog_bci_zip_paths(data_root):
+    root = os.path.join(data_root, "COG-BCI")
+    paths = []
+    if not os.path.isdir(root):
+        return paths
+    for fname in os.listdir(root):
+        match = re.search(r"sub-(\d+)\.zip$", fname, flags=re.IGNORECASE)
+        if match is not None:
+            paths.append((int(match.group(1)), os.path.join(root, fname)))
+    return sorted(paths, key=lambda item: item[0])
+
+
+def _find_cog_eeg_pair(archive_names, session, task):
+    suffix = "/ses-S{}/eeg/{}.set".format(int(session), task)
+    candidates = sorted(name for name in archive_names if name.endswith(suffix))
+    if not candidates:
+        return None
+    set_name = candidates[0]
+    fdt_name = set_name[:-4] + ".fdt"
+    if fdt_name not in archive_names:
+        return None
+    return archive_names[set_name], archive_names[fdt_name]
+
+
 def _crop_eegmat_segment(data, fs, rec):
     crop_samples = int(round(60.0 * float(fs)))
     if data.shape[-1] <= crop_samples:
@@ -117,11 +172,10 @@ def load_eegmat(data_root, target_fs=250.0, window_sec=1.0, stride_sec=1.0,
                          label_names)
 
 
-def _extract_eeglab_pair(zip_file, set_name, workdir):
-    fdt_name = set_name[:-4] + ".fdt"
-    zip_file.extract(set_name, workdir)
-    zip_file.extract(fdt_name, workdir)
-    return os.path.join(workdir, set_name.replace("/", os.sep))
+def _extract_eeglab_pair(zip_file, set_arcname, fdt_arcname, workdir):
+    zip_file.extract(set_arcname, workdir)
+    zip_file.extract(fdt_arcname, workdir)
+    return os.path.join(workdir, set_arcname.replace("/", os.sep))
 
 
 def load_cog_bci(data_root, paradigm="nback", sessions=(1, 2, 3),
@@ -132,30 +186,25 @@ def load_cog_bci(data_root, paradigm="nback", sessions=(1, 2, 3),
     if paradigm not in COG_TASKS:
         raise ValueError("paradigm must be one of {}".format(sorted(COG_TASKS)))
 
-    root = os.path.join(data_root, "COG-BCI")
     all_x, all_rows = [], []
     channels = None
     label_names = ({0: "0-back", 1: "1-back", 2: "2-back"}
                    if paradigm == "nback"
                    else {0: "MAT-B easy", 1: "MAT-B medium", 2: "MAT-B difficult"})
 
-    for zip_path in sorted(glob.glob(os.path.join(root, "sub-*.zip"))):
-        sub_match = re.search(r"sub-(\d+)\.zip$", os.path.basename(zip_path))
-        if sub_match is None:
-            continue
-        subject = int(sub_match.group(1))
+    for subject, zip_path in _discover_cog_bci_zip_paths(data_root):
         if not _subject_allowed(subject, subjects):
             continue
         with zipfile.ZipFile(zip_path) as zf:
+            archive_names = {name.replace("\\", "/"): name for name in zf.namelist()}
             for session in sessions:
-                ses_name = "ses-S{}".format(int(session))
                 for task, label in COG_TASKS[paradigm]:
-                    set_name = "sub-{0:02d}/{1}/eeg/{2}.set".format(subject, ses_name, task)
-                    if set_name not in zf.namelist():
+                    eeg_pair = _find_cog_eeg_pair(archive_names, session, task)
+                    if eeg_pair is None:
                         continue
                     tmpdir = tempfile.mkdtemp(prefix="cog_bci_")
                     try:
-                        set_path = _extract_eeglab_pair(zf, set_name, tmpdir)
+                        set_path = _extract_eeglab_pair(zf, eeg_pair[0], eeg_pair[1], tmpdir)
                         raw = mne.io.read_raw_eeglab(set_path, preload=True, verbose="ERROR")
                         picks, picked_names = useful_eeg_channels(raw.ch_names)
                         channels = picked_names
@@ -220,6 +269,50 @@ def load_npz(path):
     }
 
 
+def _validate_cache_scope(dataset, name, data_root, subjects=None, sessions=None,
+                          cog_paradigm="nback"):
+    meta = dataset["meta"]
+    cached_subjects = set(int(s) for s in np.unique(meta["subject"].values))
+    if subjects is not None:
+        requested_subjects = set(int(s) for s in subjects)
+        missing = sorted(requested_subjects - cached_subjects)
+        if missing:
+            raise ValueError(
+                "Cache subject-scope mismatch: cache has subjects {}, but requested "
+                "subjects {}. Missing {}. Rebuild this cache or use the matching "
+                "subject-specific cache.".format(
+                    sorted(cached_subjects), sorted(requested_subjects), missing
+                )
+            )
+    elif name == "cog-bci":
+        available = set(discover_cog_bci_recording_subjects(
+            data_root, paradigm=cog_paradigm, sessions=sessions or (1, 2, 3)
+        ))
+        missing = sorted(available - cached_subjects)
+        if missing:
+            preview = missing[:10]
+            suffix = "..." if len(missing) > len(preview) else ""
+            raise ValueError(
+                "Cache subject-scope mismatch: COG-BCI data root contains {} subjects "
+                "with requested {} recordings, but cache contains only {} subjects. "
+                "Missing subjects: {}{}. "
+                "Rebuild the cache with --rebuild-cache or remove the stale cache.".format(
+                    len(available), cog_paradigm, len(cached_subjects), preview, suffix
+                )
+            )
+    if sessions is not None:
+        requested_sessions = set(int(s) for s in sessions)
+        cached_sessions = set(int(s) for s in np.unique(meta["session"].values))
+        missing_sessions = sorted(requested_sessions - cached_sessions)
+        if missing_sessions:
+            raise ValueError(
+                "Cache session-scope mismatch: requested sessions {}, but cache has "
+                "sessions {}. Missing {}. Rebuild this cache for the requested protocol.".format(
+                    sorted(requested_sessions), sorted(cached_sessions), missing_sessions
+                )
+            )
+
+
 def load_dataset(name, data_root="data", cache=None, rebuild_cache=False,
                  cog_paradigm="nback", **kwargs):
     if cache and os.path.exists(cache) and not rebuild_cache:
@@ -239,6 +332,11 @@ def load_dataset(name, data_root="data", cache=None, rebuild_cache=False,
                 "record-level standardization. Rebuild it with --rebuild-cache for the "
                 "strict source-only normalization protocol.".format(cache)
             )
+        _validate_cache_scope(
+            dataset, name, data_root,
+            subjects=kwargs.get("subjects"), sessions=kwargs.get("sessions"),
+            cog_paradigm=cog_paradigm,
+        )
         return dataset
     if kwargs.get("target_fs") is None:
         kwargs["target_fs"] = DEFAULT_TARGET_FS[name]
