@@ -29,6 +29,10 @@ def _model_label(args):
         return "tahag"
     if args.model == "svm":
         return "svm"
+    if args.model == "lsccn":
+        return "lsccn"
+    if args.model in ["lstm", "bilstm", "transformer", "shallowcnn"]:
+        return args.model
     if args.bnorm == "spddsbn":
         return "tsmnet_spddsbn"
     if args.bnorm == "spdbn":
@@ -72,7 +76,10 @@ def parse_args():
     parser.add_argument("--cog-paradigm", choices=["nback", "matb"], default="nback")
     parser.add_argument("--protocol", choices=["single_session", "cog_multi_session", "loso"],
                         required=True)
-    parser.add_argument("--model", choices=["tsmnet", "eegconformer", "eegnet", "bfgcn", "tahag", "svm"],
+    parser.add_argument("--model", choices=[
+        "tsmnet", "eegconformer", "eegnet", "bfgcn", "tahag", "svm",
+        "lsccn", "lstm", "bilstm", "transformer", "shallowcnn",
+    ],
                         default="tsmnet")
     parser.add_argument("--subject", type=int, default=None,
                         help="Evaluate one subject only. Default: run all subjects.")
@@ -131,6 +138,22 @@ def parse_args():
                         help="Enable SVC probability calibration. Slow; only used with --svm-estimator svc.")
     parser.add_argument("--svm-max-iter", type=int, default=5000,
                         help="Maximum iterations for LinearSVC.")
+    parser.add_argument("--lsccn-latent-dim", type=int, default=200)
+    parser.add_argument("--lsccn-routing-iters", type=int, default=3)
+    parser.add_argument("--lsccn-recon-weight", type=float, default=1e-5)
+    parser.add_argument("--lsccn-kl-weight", type=float, default=0.1)
+    parser.add_argument("--recurrent-hidden", type=int, default=64)
+    parser.add_argument("--recurrent-layers", type=int, default=1)
+    parser.add_argument("--recurrent-dropout", type=float, default=0.5)
+    parser.add_argument("--transformer-d-model", type=int, default=64)
+    parser.add_argument("--transformer-heads", type=int, default=4)
+    parser.add_argument("--transformer-layers", type=int, default=2)
+    parser.add_argument("--transformer-ff", type=int, default=128)
+    parser.add_argument("--transformer-dropout", type=float, default=0.2)
+    parser.add_argument("--shallow-filters", type=int, default=40)
+    parser.add_argument("--shallow-kernel", type=int, default=25)
+    parser.add_argument("--shallow-pool", type=int, default=25)
+    parser.add_argument("--shallow-dropout", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-size", type=float, default=0.2,
                         help="Validation fraction for LOSO source subjects and COG fallback splits.")
@@ -256,6 +279,22 @@ def main():
             svm_class_weight=args.svm_class_weight,
             svm_probability=args.svm_probability,
             svm_max_iter=args.svm_max_iter,
+            lsccn_latent_dim=args.lsccn_latent_dim,
+            lsccn_routing_iters=args.lsccn_routing_iters,
+            lsccn_recon_weight=args.lsccn_recon_weight,
+            lsccn_kl_weight=args.lsccn_kl_weight,
+            recurrent_hidden=args.recurrent_hidden,
+            recurrent_layers=args.recurrent_layers,
+            recurrent_dropout=args.recurrent_dropout,
+            transformer_d_model=args.transformer_d_model,
+            transformer_heads=args.transformer_heads,
+            transformer_layers=args.transformer_layers,
+            transformer_ff=args.transformer_ff,
+            transformer_dropout=args.transformer_dropout,
+            shallow_filters=args.shallow_filters,
+            shallow_kernel=args.shallow_kernel,
+            shallow_pool=args.shallow_pool,
+            shallow_dropout=args.shallow_dropout,
         )
         row = {
             "dataset": dataset["name"],
@@ -341,6 +380,22 @@ def main():
             "svm_class_weight": args.svm_class_weight if args.model == "svm" else "",
             "svm_probability": args.svm_probability if args.model == "svm" else "",
             "svm_max_iter": args.svm_max_iter if args.model == "svm" else "",
+            "lsccn_latent_dim": args.lsccn_latent_dim if args.model == "lsccn" else "",
+            "lsccn_routing_iters": args.lsccn_routing_iters if args.model == "lsccn" else "",
+            "lsccn_recon_weight": args.lsccn_recon_weight if args.model == "lsccn" else "",
+            "lsccn_kl_weight": args.lsccn_kl_weight if args.model == "lsccn" else "",
+            "recurrent_hidden": args.recurrent_hidden if args.model in ["lstm", "bilstm"] else "",
+            "recurrent_layers": args.recurrent_layers if args.model in ["lstm", "bilstm"] else "",
+            "recurrent_dropout": args.recurrent_dropout if args.model in ["lstm", "bilstm"] else "",
+            "transformer_d_model": args.transformer_d_model if args.model == "transformer" else "",
+            "transformer_heads": args.transformer_heads if args.model == "transformer" else "",
+            "transformer_layers": args.transformer_layers if args.model == "transformer" else "",
+            "transformer_ff": args.transformer_ff if args.model == "transformer" else "",
+            "transformer_dropout": args.transformer_dropout if args.model == "transformer" else "",
+            "shallow_filters": args.shallow_filters if args.model == "shallowcnn" else "",
+            "shallow_kernel": args.shallow_kernel if args.model == "shallowcnn" else "",
+            "shallow_pool": args.shallow_pool if args.model == "shallowcnn" else "",
+            "shallow_dropout": args.shallow_dropout if args.model == "shallowcnn" else "",
             "val_size": args.val_size,
             "single_val_size": args.single_val_size,
             "test_size": args.test_size,

@@ -1,6 +1,6 @@
-# TSMNet, EEG-Conformer, EEGNet, BF-GCN, TAHAG, and SVM Experiment Commands
+# TSMNet, EEG-Conformer, EEGNet, BF-GCN, TAHAG, SVM, LSCCN, and Temporal Baseline Commands
 
-This file lists the full commands for running TSMNet, EEG-Conformer, EEGNet, BF-GCN, TAHAG, and SVM experiments on STEW, EEGMAT, and COG-BCI.
+This file lists the full commands for running TSMNet, EEG-Conformer, EEGNet, BF-GCN, TAHAG, SVM, LSCCN, LSTM, BiLSTM, Transformer, and ShallowCNN experiments on STEW, EEGMAT, and COG-BCI.
 
 Before formal training, rebuild strict caches once and inspect the split to confirm sampling rate, subject scope, train/validation/test counts, and subject-disjoint validation where applicable. Older caches with record-level standardization are rejected by the loader.
 
@@ -200,6 +200,50 @@ python run_experiment.py --model svm --dataset eegmat --protocol loso --target-f
 
 Useful tunable parameters are `--svm-estimator`, `--svm-kernel`, `--svm-c`, `--svm-gamma`, `--svm-class-weight`, `--svm-max-iter`, and `--svm-probability`. `--epochs` is accepted for command compatibility but SVM training runs once. `--svm-probability` is intentionally off by default because SVC probability calibration can make LOSO runs several times slower.
 
+## LSCCN Baseline
+
+LSCCN has no cross-domain adaptation in this project. It follows the local paper's feature-fusion capsule design: each source-normalized 1 s EEG window is converted into 5-band log-power features plus gamma-band PLV connectivity, then classified by a VAE, 1D convolution, primary capsules, and dynamic-routing digit capsules. Target-domain windows are used only for final testing.
+
+Use `--model lsccn` with any dataset/protocol command above. Examples:
+
+```powershell
+python run_experiment.py --model lsccn --dataset stew --protocol loso --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model lsccn --dataset eegmat --protocol single_session --target-fs 250 --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model lsccn --dataset cog-bci --cog-paradigm nback --protocol cog_multi_session --target-fs 250 --epochs 30 --batch-size 64
+```
+
+Useful tunable parameters are `--lsccn-latent-dim`, `--lsccn-routing-iters`, `--lsccn-recon-weight`, and `--lsccn-kl-weight`. Defaults are `200`, `3`, `1e-5`, and `0.1`, respectively.
+
+## Temporal Baselines
+
+LSTM, BiLSTM, Transformer, and ShallowCNN have no cross-domain adaptation in this project. They use the same source-fitted robust normalization and the same train/validation/test splits as all other models. Target-domain windows are used only for final testing.
+
+Use `--model lstm`, `--model bilstm`, `--model transformer`, or `--model shallowcnn` with any dataset/protocol command above. Examples:
+
+```powershell
+python run_experiment.py --model lstm --dataset stew --protocol loso --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model bilstm --dataset eegmat --protocol single_session --target-fs 250 --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model transformer --dataset cog-bci --cog-paradigm nback --protocol cog_multi_session --target-fs 250 --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model shallowcnn --dataset cog-bci --cog-paradigm matb --protocol loso --target-fs 250 --epochs 30 --batch-size 64
+```
+
+Useful LSTM/BiLSTM parameters are `--recurrent-hidden`, `--recurrent-layers`, and `--recurrent-dropout`. Useful Transformer parameters are `--transformer-d-model`, `--transformer-heads`, `--transformer-layers`, `--transformer-ff`, and `--transformer-dropout`. Useful ShallowCNN parameters are `--shallow-filters`, `--shallow-kernel`, `--shallow-pool`, and `--shallow-dropout`.
+
 ## Pre-run Audit Checklist
 
 - `single_session` is the original sequential split: each task record is time-sorted, the last 20% is test, and the previous 80% is split into train/validation with `--single-val-size 0.125`.
@@ -207,7 +251,7 @@ Useful tunable parameters are `--svm-estimator`, `--svm-kernel`, `--svm-c`, `--s
 - `loso` holds out one target subject and selects validation from source subjects only.
 - Cache construction performs filtering/resampling/windowing only. Robust normalization is fitted inside each split from source training windows only.
 - Train metrics are evaluated on non-augmented training windows; validation and test are also non-augmented.
-- EEG-Conformer, EEGNet, BF-GCN, TAHAG, and SVM hyperparameters in `run_experiment.py` and `run_batch_experiments.py` are passed to the corresponding training code.
+- EEG-Conformer, EEGNet, BF-GCN, TAHAG, SVM, LSCCN, LSTM, BiLSTM, Transformer, and ShallowCNN hyperparameters in `run_experiment.py` and `run_batch_experiments.py` are passed to the corresponding training code.
 - Keep `data/`, `outputs/`, `__pycache__/`, and `*.pyc` out of the source release.
 
 ## Batch Runs
@@ -215,7 +259,7 @@ Useful tunable parameters are `--svm-estimator`, `--svm-kernel`, `--svm-c`, `--s
 Run multiple datasets, protocols, models, and COG-BCI paradigms in one command:
 
 ```powershell
-python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models tsmnet,eegconformer,eegnet,bfgcn,tahag,svm --epochs 30 --batch-size 64
+python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models tsmnet,eegconformer,eegnet,bfgcn,tahag,svm,lsccn,lstm,bilstm,transformer,shallowcnn --epochs 30 --batch-size 64
 ```
 
 Preview commands without running:
@@ -226,7 +270,7 @@ python run_batch_experiments.py --datasets stew,eegmat --protocols single_sessio
 
 ## Baseline Defaults
 
-Baseline defaults are aligned with the local reference implementations where explicit examples are available: EEG-Conformer uses the 1 s Conformer setting family (`emb_size=40`, `depth=6`, `num_heads=5`), EEGNet follows `EEGNet/trainEEGNet.py` (`64/4/2`), and BF-GCN follows `BF-GCN/Simple_Demo.py` (`kadj=2`, `num_out=16`, `att_hidden=16`, `classifier_hidden=32`, `avgpool=2`). TAHAG follows the independent-transfer setting: adaptive graph learning, attention, source classification, GRL domain loss, and MMD loss. SVM defaults to `LinearSVC` because flattened EEG windows are high-dimensional and LOSO repeatedly trains on thousands of windows; RBF `SVC` remains available as an explicitly reported slow ablation. For formal reporting, keep the default run and optionally add a small validation-only sweep or sensitivity analysis; do not tune on target/test labels.
+Baseline defaults are aligned with the local reference implementations where explicit examples are available: EEG-Conformer uses the 1 s Conformer setting family (`emb_size=40`, `depth=6`, `num_heads=5`), EEGNet follows `EEGNet/trainEEGNet.py` (`64/4/2`), and BF-GCN follows `BF-GCN/Simple_Demo.py` (`kadj=2`, `num_out=16`, `att_hidden=16`, `classifier_hidden=32`, `avgpool=2`). TAHAG follows the independent-transfer setting: adaptive graph learning, attention, source classification, GRL domain loss, and MMD loss. SVM defaults to `LinearSVC` because flattened EEG windows are high-dimensional and LOSO repeatedly trains on thousands of windows; RBF `SVC` remains available as an explicitly reported slow ablation. LSCCN follows the local paper's 200-dimensional latent space and 3 dynamic-routing iterations, with PLV plus band-power feature fusion. LSTM/BiLSTM use hidden size 64, Transformer uses `d_model=64` with 4 heads and 2 layers, and ShallowCNN uses 40 temporal-spatial filters. For formal reporting, keep the default run and optionally add a small validation-only sweep or sensitivity analysis; do not tune on target/test labels.
 
 STEW:
 

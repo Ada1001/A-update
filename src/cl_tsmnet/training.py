@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader, Dataset
 
 BFGCN_FEATURE_BANDS = [(1.0, 4.0), (4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 45.0)]
 BFGCN_PLV_BANDS = [(4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 45.0)]
+LSCCN_CONNECTIVITY_BAND = (30.0, 45.0)
 
 
 class EEGWindowDataset(Dataset):
@@ -108,7 +109,7 @@ def _metrics_from_arrays(y_true, y_pred, y_prob):
         else:
             auc = roc_auc_score(y_true, y_prob, multi_class="ovr",
                                 average="macro")
-    except ValueError:
+    except (TypeError, ValueError):
         auc = np.nan
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
@@ -216,6 +217,67 @@ def build_tahag(nchannels, nclasses, adj=None, dropout=0.25,
         attention=bool(attention),
         hidden_dims=hidden_dims,
     )
+
+
+def build_lsccn(nchannels, nfeatures, nclasses, latent_dim=200,
+                routing_iters=3, conv_filters=16, primary_filters=32,
+                primary_dim=4, digit_dim=16):
+    from .lsccn import LSCCN
+
+    return LSCCN(
+        nchannels=int(nchannels),
+        nfeatures=int(nfeatures),
+        nclasses=int(nclasses),
+        latent_dim=int(latent_dim),
+        conv_filters=int(conv_filters),
+        primary_filters=int(primary_filters),
+        primary_dim=int(primary_dim),
+        digit_dim=int(digit_dim),
+        routing_iters=int(routing_iters),
+    )
+
+
+def build_temporal_baseline(model_type, nchannels, nsamples, nclasses,
+                            recurrent_hidden=64, recurrent_layers=1,
+                            recurrent_dropout=0.5,
+                            transformer_d_model=64, transformer_heads=4,
+                            transformer_layers=2, transformer_ff=128,
+                            transformer_dropout=0.2,
+                            shallow_filters=40, shallow_kernel=25,
+                            shallow_pool=25, shallow_dropout=0.5):
+    from .temporal_baselines import LSTMClassifier, ShallowCNN, TransformerClassifier
+
+    if model_type in ["lstm", "bilstm"]:
+        return LSTMClassifier(
+            nchannels=int(nchannels),
+            nclasses=int(nclasses),
+            hidden_size=int(recurrent_hidden),
+            num_layers=int(recurrent_layers),
+            dropout=float(recurrent_dropout),
+            bidirectional=(model_type == "bilstm"),
+        )
+    if model_type == "transformer":
+        return TransformerClassifier(
+            nchannels=int(nchannels),
+            nsamples=int(nsamples),
+            nclasses=int(nclasses),
+            d_model=int(transformer_d_model),
+            num_heads=int(transformer_heads),
+            num_layers=int(transformer_layers),
+            dim_feedforward=int(transformer_ff),
+            dropout=float(transformer_dropout),
+        )
+    if model_type == "shallowcnn":
+        return ShallowCNN(
+            nchannels=int(nchannels),
+            nsamples=int(nsamples),
+            nclasses=int(nclasses),
+            filters=int(shallow_filters),
+            temporal_kernel=int(shallow_kernel),
+            pool_size=int(shallow_pool),
+            dropout=float(shallow_dropout),
+        )
+    raise ValueError("Unknown temporal baseline: {}".format(model_type))
 
 
 def make_optimizer(model, lr=1e-3, weight_decay=1e-4, model_type="tsmnet"):
@@ -332,6 +394,22 @@ def _bfgcn_plv(windows, fs):
     return np.stack(adjs, axis=-1).astype(np.float32)
 
 
+def _lsccn_fused_features(windows, fs):
+    windows = np.asarray(windows, dtype=np.float32)
+    power = _bfgcn_bandpower_features(windows, fs)
+    power_min = np.min(power, axis=(1, 2), keepdims=True)
+    power_max = np.max(power, axis=(1, 2), keepdims=True)
+    power = (power - power_min) / (power_max - power_min + 1e-6)
+
+    filtered = _safe_bandpass_batch(windows, fs, LSCCN_CONNECTIVITY_BAND)
+    analytic = signal.hilbert(filtered, axis=-1)
+    phase = analytic / (np.abs(analytic) + 1e-8)
+    plv = np.abs(np.einsum("nct,ndt->ncd", phase, np.conj(phase)) / phase.shape[-1])
+    diag = np.arange(plv.shape[1])
+    plv[:, diag, diag] = 0.0
+    return np.concatenate([plv.astype(np.float32), power.astype(np.float32)], axis=-1)
+
+
 class BFGCNCollator:
     def __init__(self, fs):
         self.fs = float(fs)
@@ -364,6 +442,21 @@ class TAHAGCollator:
         )
 
 
+class LSCCNCollator:
+    def __init__(self, fs):
+        self.fs = float(fs)
+
+    def __call__(self, batch):
+        xs, ys, ds = zip(*batch)
+        windows = torch.stack(xs).numpy().astype(np.float32)
+        features = _lsccn_fused_features(windows, self.fs)
+        return (
+            torch.from_numpy(features),
+            torch.stack(ys).long(),
+            torch.stack(ds).long(),
+        )
+
+
 def _bfgcn_forward_logits(model, batch, device, alpha=0.0):
     xb, adjb, yb, db = batch
     xb = xb.to(device)
@@ -383,6 +476,33 @@ def _tahag_forward_logits(model, batch, device, target_batch=None, alpha=0.0):
         xt = target_batch[0].to(device)
         logits, domain_logits, mmd_loss = model(xb, xt, alpha=alpha)
     return logits, domain_logits, mmd_loss, yb, db
+
+
+def _lsccn_forward(model, batch, device):
+    xb, yb, db = batch
+    xb = xb.to(device)
+    yb = yb.to(device)
+    return model(xb), xb, yb, db.to(device)
+
+
+def _lsccn_margin_loss(scores, labels, nclasses, m_plus=0.9, m_minus=0.1,
+                       down_weight=0.5):
+    target = torch.zeros(scores.shape[0], int(nclasses), device=scores.device)
+    target.scatter_(1, labels[:, None], 1.0)
+    positive = target * torch.clamp(float(m_plus) - scores, min=0.0).pow(2)
+    negative = (1.0 - target) * torch.clamp(scores - float(m_minus), min=0.0).pow(2)
+    return torch.mean(torch.sum(positive + float(down_weight) * negative, dim=1))
+
+
+def _lsccn_loss(outputs, xb, yb, nclasses, recon_weight=1e-5,
+                kl_weight=0.1):
+    scores, recon, mu, logvar = outputs
+    margin = _lsccn_margin_loss(scores, yb, nclasses)
+    recon_loss = torch.nn.functional.binary_cross_entropy(
+        recon.clamp(1e-6, 1.0 - 1e-6), xb.clamp(0.0, 1.0), reduction="mean"
+    )
+    kl_loss = -0.5 * torch.mean(1.0 + logvar - mu.pow(2) - logvar.exp())
+    return margin + float(recon_weight) * (recon_loss + float(kl_weight) * kl_loss)
 
 
 def evaluate_bfgcn(model, loader, device, return_predictions=False):
@@ -422,6 +542,34 @@ def evaluate_tahag(model, loader, device, return_predictions=False):
             logits_cpu = logits.detach().cpu()
             pred = torch.argmax(logits_cpu, dim=1).numpy()
             prob = torch.softmax(logits_cpu, dim=1).numpy()
+            y_pred.extend(pred.tolist())
+            y_prob.extend(prob.tolist())
+            y_true.extend(yb.detach().cpu().numpy().tolist())
+    metrics = _metrics_from_arrays(y_true, y_pred, y_prob)
+    metrics.update({"loss": float(np.mean(losses)) if losses else np.nan})
+    if return_predictions:
+        metrics["y_true"] = np.asarray(y_true, dtype=np.int64)
+        metrics["y_pred"] = np.asarray(y_pred, dtype=np.int64)
+        metrics["y_prob"] = np.asarray(y_prob, dtype=np.float32)
+        metrics["indices"] = np.asarray(loader.dataset.indices, dtype=np.int64)
+    return metrics
+
+
+def evaluate_lsccn(model, loader, device, nclasses, recon_weight=1e-5,
+                   kl_weight=0.1, return_predictions=False):
+    model.eval()
+    losses, y_true, y_pred, y_prob = [], [], [], []
+    with torch.no_grad():
+        for batch in loader:
+            outputs, xb, yb, _ = _lsccn_forward(model, batch, device)
+            scores = outputs[0]
+            loss = _lsccn_loss(outputs, xb, yb, nclasses,
+                               recon_weight=recon_weight,
+                               kl_weight=kl_weight)
+            losses.append(float(loss.detach().cpu().item()))
+            scores_cpu = scores.detach().cpu()
+            pred = torch.argmax(scores_cpu, dim=1).numpy()
+            prob = torch.softmax(scores_cpu, dim=1).numpy()
             y_pred.extend(pred.tolist())
             y_prob.extend(prob.tolist())
             y_true.extend(yb.detach().cpu().numpy().tolist())
@@ -543,7 +691,16 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     svm_class_weight="balanced", svm_probability=False,
                     svm_max_iter=5000, tahag_dropout=0.25,
                     tahag_domain_weight=1.0, tahag_mmd_weight=1.0,
-                    tahag_adaptive=True, tahag_attention=True):
+                    tahag_adaptive=True, tahag_attention=True,
+                    lsccn_latent_dim=200, lsccn_routing_iters=3,
+                    lsccn_recon_weight=1e-5, lsccn_kl_weight=0.1,
+                    recurrent_hidden=64, recurrent_layers=1,
+                    recurrent_dropout=0.5,
+                    transformer_d_model=64, transformer_heads=4,
+                    transformer_layers=2, transformer_ff=128,
+                    transformer_dropout=0.2,
+                    shallow_filters=40, shallow_kernel=25,
+                    shallow_pool=25, shallow_dropout=0.5):
     torch.manual_seed(int(seed))
     np.random.seed(int(seed))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -655,6 +812,31 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
             adaptive=tahag_adaptive,
             attention=tahag_attention,
         ).to(device)
+    elif model_type == "lsccn":
+        model = build_lsccn(
+            x.shape[1], x.shape[1] + len(BFGCN_FEATURE_BANDS), nclasses,
+            latent_dim=lsccn_latent_dim,
+            routing_iters=lsccn_routing_iters,
+        ).to(device)
+        target_adapt = False
+    elif model_type in ["lstm", "bilstm", "transformer", "shallowcnn"]:
+        model = build_temporal_baseline(
+            model_type,
+            x.shape[1], x.shape[2], nclasses,
+            recurrent_hidden=recurrent_hidden,
+            recurrent_layers=recurrent_layers,
+            recurrent_dropout=recurrent_dropout,
+            transformer_d_model=transformer_d_model,
+            transformer_heads=transformer_heads,
+            transformer_layers=transformer_layers,
+            transformer_ff=transformer_ff,
+            transformer_dropout=transformer_dropout,
+            shallow_filters=shallow_filters,
+            shallow_kernel=shallow_kernel,
+            shallow_pool=shallow_pool,
+            shallow_dropout=shallow_dropout,
+        ).to(device)
+        target_adapt = False
     else:
         raise ValueError("Unknown model_type: {}".format(model_type))
     optimizer = make_optimizer(model, lr=lr, weight_decay=weight_decay,
@@ -670,7 +852,10 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
     test_ds = EEGWindowDataset(x, y, domains, split["test"], augment=False,
                                normalizer=normalizer)
     if model_type in ["bfgcn", "tahag"]:
-        collate = BFGCNCollator(dataset["fs"]) if model_type == "bfgcn" else TAHAGCollator(dataset["fs"])
+        if model_type == "bfgcn":
+            collate = BFGCNCollator(dataset["fs"])
+        else:
+            collate = TAHAGCollator(dataset["fs"])
         target_domain_ds = EEGWindowDataset(
             x, y, domains, split["test"], augment=False, normalizer=normalizer
         )
@@ -685,6 +870,21 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         target_domain_loader = DataLoader(
             target_domain_ds, batch_size=domain_batch_size, shuffle=True,
             drop_last=drop_target, collate_fn=collate,
+        )
+        train_eval_loader = DataLoader(
+            train_eval_ds, batch_size=batch_size, shuffle=False, collate_fn=collate
+        )
+        val_loader = DataLoader(
+            val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate
+        )
+        test_loader = DataLoader(
+            test_ds, batch_size=batch_size, shuffle=False, collate_fn=collate
+        )
+    elif model_type == "lsccn":
+        collate = LSCCNCollator(dataset["fs"])
+        train_loader = DataLoader(
+            train_ds, batch_size=batch_size, shuffle=True, drop_last=False,
+            collate_fn=collate,
         )
         train_eval_loader = DataLoader(
             train_eval_ds, batch_size=batch_size, shuffle=False, collate_fn=collate
@@ -749,6 +949,13 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     loss = (class_loss
                             + float(tahag_domain_weight) * domain_loss
                             + float(tahag_mmd_weight) * alpha * mmd_loss)
+            elif model_type == "lsccn":
+                outputs, xb, yb, _ = _lsccn_forward(model, batch, device)
+                loss = _lsccn_loss(
+                    outputs, xb, yb, nclasses,
+                    recon_weight=lsccn_recon_weight,
+                    kl_weight=lsccn_kl_weight,
+                )
             else:
                 xb, yb, db = batch
                 xb = xb.to(device)
@@ -763,6 +970,12 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
             val_metrics = evaluate_bfgcn(model, val_loader, device)
         elif model_type == "tahag":
             val_metrics = evaluate_tahag(model, val_loader, device)
+        elif model_type == "lsccn":
+            val_metrics = evaluate_lsccn(
+                model, val_loader, device, nclasses,
+                recon_weight=lsccn_recon_weight,
+                kl_weight=lsccn_kl_weight,
+            )
         else:
             val_metrics = evaluate(model, val_loader, device)
         row = {"epoch": epoch, "train_loss": float(np.mean(batch_losses)),
@@ -793,6 +1006,22 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         train_metrics = evaluate_tahag(model, train_eval_loader, device)
         val_metrics = evaluate_tahag(model, val_loader, device)
         test_metrics = evaluate_tahag(model, test_loader, device)
+    elif model_type == "lsccn":
+        train_metrics = evaluate_lsccn(
+            model, train_eval_loader, device, nclasses,
+            recon_weight=lsccn_recon_weight,
+            kl_weight=lsccn_kl_weight,
+        )
+        val_metrics = evaluate_lsccn(
+            model, val_loader, device, nclasses,
+            recon_weight=lsccn_recon_weight,
+            kl_weight=lsccn_kl_weight,
+        )
+        test_metrics = evaluate_lsccn(
+            model, test_loader, device, nclasses,
+            recon_weight=lsccn_recon_weight,
+            kl_weight=lsccn_kl_weight,
+        )
     else:
         train_metrics = evaluate(model, train_eval_loader, device)
         val_metrics = evaluate(model, val_loader, device)

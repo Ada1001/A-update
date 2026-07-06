@@ -15,8 +15,8 @@ def parse_args():
                         help="Comma-separated: stew,eegmat,cog-bci")
     parser.add_argument("--protocols", default="single_session,loso",
                         help="Comma-separated: single_session,cog_multi_session,loso")
-    parser.add_argument("--models", default="tsmnet,eegconformer,eegnet,bfgcn,tahag,svm",
-                        help="Comma-separated: tsmnet,eegconformer,eegnet,bfgcn,tahag,svm")
+    parser.add_argument("--models", default="tsmnet,eegconformer,eegnet,bfgcn,tahag,svm,lsccn,lstm,bilstm,transformer,shallowcnn",
+                        help="Comma-separated model names.")
     parser.add_argument("--cog-paradigms", default="nback,matb",
                         help="Comma-separated COG-BCI paradigms.")
     parser.add_argument("--data-root", default="data")
@@ -65,6 +65,22 @@ def parse_args():
     parser.add_argument("--svm-class-weight", default="balanced")
     parser.add_argument("--svm-probability", action="store_true")
     parser.add_argument("--svm-max-iter", type=int, default=5000)
+    parser.add_argument("--lsccn-latent-dim", type=int, default=200)
+    parser.add_argument("--lsccn-routing-iters", type=int, default=3)
+    parser.add_argument("--lsccn-recon-weight", type=float, default=1e-5)
+    parser.add_argument("--lsccn-kl-weight", type=float, default=0.1)
+    parser.add_argument("--recurrent-hidden", type=int, default=64)
+    parser.add_argument("--recurrent-layers", type=int, default=1)
+    parser.add_argument("--recurrent-dropout", type=float, default=0.5)
+    parser.add_argument("--transformer-d-model", type=int, default=64)
+    parser.add_argument("--transformer-heads", type=int, default=4)
+    parser.add_argument("--transformer-layers", type=int, default=2)
+    parser.add_argument("--transformer-ff", type=int, default=128)
+    parser.add_argument("--transformer-dropout", type=float, default=0.2)
+    parser.add_argument("--shallow-filters", type=int, default=40)
+    parser.add_argument("--shallow-kernel", type=int, default=25)
+    parser.add_argument("--shallow-pool", type=int, default=25)
+    parser.add_argument("--shallow-dropout", type=float, default=0.5)
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--no-augment", action="store_true")
     parser.add_argument("--no-target-adapt", action="store_true")
@@ -158,6 +174,34 @@ def main():
                         ])
                         if args.svm_probability:
                             cmd.append("--svm-probability")
+                    if model == "lsccn":
+                        cmd.extend([
+                            "--lsccn-latent-dim", str(args.lsccn_latent_dim),
+                            "--lsccn-routing-iters", str(args.lsccn_routing_iters),
+                            "--lsccn-recon-weight", str(args.lsccn_recon_weight),
+                            "--lsccn-kl-weight", str(args.lsccn_kl_weight),
+                        ])
+                    if model in ["lstm", "bilstm"]:
+                        cmd.extend([
+                            "--recurrent-hidden", str(args.recurrent_hidden),
+                            "--recurrent-layers", str(args.recurrent_layers),
+                            "--recurrent-dropout", str(args.recurrent_dropout),
+                        ])
+                    if model == "transformer":
+                        cmd.extend([
+                            "--transformer-d-model", str(args.transformer_d_model),
+                            "--transformer-heads", str(args.transformer_heads),
+                            "--transformer-layers", str(args.transformer_layers),
+                            "--transformer-ff", str(args.transformer_ff),
+                            "--transformer-dropout", str(args.transformer_dropout),
+                        ])
+                    if model == "shallowcnn":
+                        cmd.extend([
+                            "--shallow-filters", str(args.shallow_filters),
+                            "--shallow-kernel", str(args.shallow_kernel),
+                            "--shallow-pool", str(args.shallow_pool),
+                            "--shallow-dropout", str(args.shallow_dropout),
+                        ])
                     if args.rebuild_cache:
                         cmd.append("--rebuild-cache")
                     if args.no_augment:
