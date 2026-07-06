@@ -203,6 +203,7 @@ Useful tunable parameters are `--svm-estimator`, `--svm-kernel`, `--svm-c`, `--s
 ## LSCCN Baseline
 
 LSCCN has no cross-domain adaptation in this project. It follows the local paper's feature-fusion capsule design: each source-normalized 1 s EEG window is converted into 5-band log-power features plus gamma-band PLV connectivity, then classified by a VAE, 1D convolution, primary capsules, and dynamic-routing digit capsules. Target-domain windows are used only for final testing.
+For binary LSCCN runs, the final capsule decision threshold is selected on validation windows only and saved as `decision_threshold`.
 
 Use `--model lsccn` with any dataset/protocol command above. Examples:
 

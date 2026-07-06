@@ -122,6 +122,34 @@ def _metrics_from_arrays(y_true, y_pred, y_prob):
     }
 
 
+def _best_binary_threshold(y_true, scores):
+    y_true = np.asarray(y_true, dtype=np.int64)
+    scores = np.asarray(scores, dtype=np.float64)
+    finite = np.isfinite(scores)
+    y_true = y_true[finite]
+    scores = scores[finite]
+    if len(scores) == 0 or len(np.unique(y_true)) < 2:
+        return 0.0
+    unique_scores = np.unique(scores)
+    if len(unique_scores) == 1:
+        return float(unique_scores[0])
+    mids = (unique_scores[:-1] + unique_scores[1:]) / 2.0
+    eps = max(1e-6, float(np.max(np.abs(unique_scores))) * 1e-6)
+    candidates = np.concatenate([
+        [unique_scores[0] - eps],
+        mids,
+        [unique_scores[-1] + eps],
+    ])
+    best_threshold, best_score = 0.0, -np.inf
+    for threshold in candidates:
+        pred = (scores >= threshold).astype(np.int64)
+        score = balanced_accuracy_score(y_true, pred)
+        if score > best_score:
+            best_score = score
+            best_threshold = float(threshold)
+    return best_threshold
+
+
 def _ensure_tsmnet_on_path(project_root):
     tsmnet_path = os.path.join(project_root, "TSMNet")
     if tsmnet_path not in sys.path:
@@ -556,9 +584,10 @@ def evaluate_tahag(model, loader, device, return_predictions=False):
 
 
 def evaluate_lsccn(model, loader, device, nclasses, recon_weight=1e-5,
-                   kl_weight=0.1, return_predictions=False):
+                   kl_weight=0.1, binary_threshold=None,
+                   return_predictions=False):
     model.eval()
-    losses, y_true, y_pred, y_prob = [], [], [], []
+    losses, y_true, y_pred, y_prob, y_score = [], [], [], [], []
     with torch.no_grad():
         for batch in loader:
             outputs, xb, yb, _ = _lsccn_forward(model, batch, device)
@@ -568,8 +597,16 @@ def evaluate_lsccn(model, loader, device, nclasses, recon_weight=1e-5,
                                kl_weight=kl_weight)
             losses.append(float(loss.detach().cpu().item()))
             scores_cpu = scores.detach().cpu()
-            pred = torch.argmax(scores_cpu, dim=1).numpy()
-            prob = torch.softmax(scores_cpu, dim=1).numpy()
+            if int(nclasses) == 2:
+                decision = (scores_cpu[:, 1] - scores_cpu[:, 0]).numpy()
+                threshold = 0.0 if binary_threshold is None else float(binary_threshold)
+                pred = (decision >= threshold).astype(np.int64)
+                pos_prob = 1.0 / (1.0 + np.exp(-(decision - threshold)))
+                prob = np.stack([1.0 - pos_prob, pos_prob], axis=1)
+                y_score.extend(decision.tolist())
+            else:
+                pred = torch.argmax(scores_cpu, dim=1).numpy()
+                prob = torch.softmax(scores_cpu, dim=1).numpy()
             y_pred.extend(pred.tolist())
             y_prob.extend(prob.tolist())
             y_true.extend(yb.detach().cpu().numpy().tolist())
@@ -579,6 +616,8 @@ def evaluate_lsccn(model, loader, device, nclasses, recon_weight=1e-5,
         metrics["y_true"] = np.asarray(y_true, dtype=np.int64)
         metrics["y_pred"] = np.asarray(y_pred, dtype=np.int64)
         metrics["y_prob"] = np.asarray(y_prob, dtype=np.float32)
+        if int(nclasses) == 2:
+            metrics["decision_score"] = np.asarray(y_score, dtype=np.float32)
         metrics["indices"] = np.asarray(loader.dataset.indices, dtype=np.int64)
     return metrics
 
@@ -998,6 +1037,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
     if model_type == "tsmnet":
         refit_batchnorm(model, x, y, domains, split["train"], split["test"], device,
                         target_adapt=target_adapt, normalizer=normalizer)
+    decision_threshold = ""
     if model_type == "bfgcn":
         train_metrics = evaluate_bfgcn(model, train_eval_loader, device)
         val_metrics = evaluate_bfgcn(model, val_loader, device)
@@ -1007,20 +1047,36 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         val_metrics = evaluate_tahag(model, val_loader, device)
         test_metrics = evaluate_tahag(model, test_loader, device)
     elif model_type == "lsccn":
+        binary_threshold = None
+        if nclasses == 2:
+            val_for_threshold = evaluate_lsccn(
+                model, val_loader, device, nclasses,
+                recon_weight=lsccn_recon_weight,
+                kl_weight=lsccn_kl_weight,
+                return_predictions=True,
+            )
+            binary_threshold = _best_binary_threshold(
+                val_for_threshold["y_true"],
+                val_for_threshold["decision_score"],
+            )
+            decision_threshold = float(binary_threshold)
         train_metrics = evaluate_lsccn(
             model, train_eval_loader, device, nclasses,
             recon_weight=lsccn_recon_weight,
             kl_weight=lsccn_kl_weight,
+            binary_threshold=binary_threshold,
         )
         val_metrics = evaluate_lsccn(
             model, val_loader, device, nclasses,
             recon_weight=lsccn_recon_weight,
             kl_weight=lsccn_kl_weight,
+            binary_threshold=binary_threshold,
         )
         test_metrics = evaluate_lsccn(
             model, test_loader, device, nclasses,
             recon_weight=lsccn_recon_weight,
             kl_weight=lsccn_kl_weight,
+            binary_threshold=binary_threshold,
         )
     else:
         train_metrics = evaluate(model, train_eval_loader, device)
@@ -1045,4 +1101,5 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         "n_val": int(len(split["val"])),
         "n_test": int(len(split["test"])),
         "artifact_z": "" if artifact_z is None else float(artifact_z),
+        "decision_threshold": decision_threshold,
     }

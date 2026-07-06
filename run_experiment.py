@@ -308,6 +308,7 @@ def main():
             "best_val_loss": res["best_val_loss"],
             "target_adapt": res["target_adapt"],
             "artifact_z": res["artifact_z"],
+            "decision_threshold": res.get("decision_threshold", ""),
             "train_bacc": res["train"]["balanced_accuracy"],
             "val_bacc": res["val"]["balanced_accuracy"],
             "test_bacc": res["test"]["balanced_accuracy"],
