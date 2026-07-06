@@ -8,7 +8,7 @@ import torch
 from scipy import signal
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, log_loss, roc_auc_score
 from sklearn.exceptions import UndefinedMetricWarning
-from sklearn.svm import SVC
+from sklearn.svm import LinearSVC, SVC
 from torch.utils.data import DataLoader, Dataset
 
 
@@ -202,6 +202,22 @@ def build_bfgcn(nchannels, nclasses, kadj=2, num_out=16, att_hidden=16,
     )
 
 
+def build_tahag(nchannels, nclasses, adj=None, dropout=0.25,
+                adaptive=True, attention=True, hidden_dims=(32, 64, 128)):
+    from .tahag import TAHAGModel
+
+    return TAHAGModel(
+        nchannels=int(nchannels),
+        in_feats=len(BFGCN_FEATURE_BANDS),
+        nclasses=int(nclasses),
+        adj=adj,
+        dropout=float(dropout),
+        adaptive=bool(adaptive),
+        attention=bool(attention),
+        hidden_dims=hidden_dims,
+    )
+
+
 def make_optimizer(model, lr=1e-3, weight_decay=1e-4, model_type="tsmnet"):
     if model_type != "tsmnet":
         return torch.optim.Adam(model.parameters(), lr=float(lr),
@@ -333,12 +349,40 @@ class BFGCNCollator:
         )
 
 
+class TAHAGCollator:
+    def __init__(self, fs):
+        self.fs = float(fs)
+
+    def __call__(self, batch):
+        xs, ys, ds = zip(*batch)
+        windows = torch.stack(xs).numpy().astype(np.float32)
+        features = _bfgcn_bandpower_features(windows, self.fs)
+        return (
+            torch.from_numpy(features),
+            torch.stack(ys).long(),
+            torch.stack(ds).long(),
+        )
+
+
 def _bfgcn_forward_logits(model, batch, device, alpha=0.0):
     xb, adjb, yb, db = batch
     xb = xb.to(device)
     adjb = adjb.to(device)
     class_logits, domain_logits = model(xb, adjb, alpha=alpha)[:2]
     return class_logits, domain_logits, yb.to(device), db.to(device)
+
+
+def _tahag_forward_logits(model, batch, device, target_batch=None, alpha=0.0):
+    xb, yb, db = batch
+    xb = xb.to(device)
+    yb = yb.to(device)
+    db = db.to(device)
+    if target_batch is None:
+        logits, domain_logits, mmd_loss = model(xb, None, alpha=alpha)
+    else:
+        xt = target_batch[0].to(device)
+        logits, domain_logits, mmd_loss = model(xb, xt, alpha=alpha)
+    return logits, domain_logits, mmd_loss, yb, db
 
 
 def evaluate_bfgcn(model, loader, device, return_predictions=False):
@@ -366,10 +410,61 @@ def evaluate_bfgcn(model, loader, device, return_predictions=False):
     return metrics
 
 
+def evaluate_tahag(model, loader, device, return_predictions=False):
+    model.eval()
+    losses, y_true, y_pred, y_prob = [], [], [], []
+    loss_fn = torch.nn.CrossEntropyLoss()
+    with torch.no_grad():
+        for batch in loader:
+            logits, _, _, yb, _ = _tahag_forward_logits(model, batch, device, target_batch=None)
+            loss = loss_fn(logits, yb.to(logits.device))
+            losses.append(float(loss.detach().cpu().item()))
+            logits_cpu = logits.detach().cpu()
+            pred = torch.argmax(logits_cpu, dim=1).numpy()
+            prob = torch.softmax(logits_cpu, dim=1).numpy()
+            y_pred.extend(pred.tolist())
+            y_prob.extend(prob.tolist())
+            y_true.extend(yb.detach().cpu().numpy().tolist())
+    metrics = _metrics_from_arrays(y_true, y_pred, y_prob)
+    metrics.update({"loss": float(np.mean(losses)) if losses else np.nan})
+    if return_predictions:
+        metrics["y_true"] = np.asarray(y_true, dtype=np.int64)
+        metrics["y_pred"] = np.asarray(y_pred, dtype=np.int64)
+        metrics["y_prob"] = np.asarray(y_prob, dtype=np.float32)
+        metrics["indices"] = np.asarray(loader.dataset.indices, dtype=np.int64)
+    return metrics
+
+
 def _svm_features(x, indices, normalizer):
     idx = np.asarray(indices, dtype=np.int64)
     values = normalizer.transform_array(np.asarray(x[idx], dtype=np.float32))
     return values.reshape(values.shape[0], -1)
+
+
+def _align_class_columns(values, classes, labels):
+    values = np.asarray(values, dtype=np.float32)
+    labels = np.asarray(labels, dtype=np.int64)
+    classes = np.asarray(classes, dtype=np.int64)
+    if values.ndim == 1:
+        aligned = np.zeros((values.shape[0], len(labels)), dtype=np.float32)
+        if len(classes) == 2:
+            first = np.flatnonzero(labels == classes[0])
+            second = np.flatnonzero(labels == classes[1])
+            if len(first):
+                aligned[:, first[0]] = -values
+            if len(second):
+                aligned[:, second[0]] = values
+        elif len(classes) == 1:
+            col = np.flatnonzero(labels == classes[0])
+            if len(col):
+                aligned[:, col[0]] = values
+        return aligned
+    aligned = np.zeros((values.shape[0], len(labels)), dtype=np.float32)
+    for col, cls in enumerate(classes):
+        matches = np.flatnonzero(labels == int(cls))
+        if len(matches):
+            aligned[:, matches[0]] = values[:, col]
+    return aligned
 
 
 def _evaluate_svm(model, x, y, indices, normalizer, labels):
@@ -377,17 +472,22 @@ def _evaluate_svm(model, x, y, indices, normalizer, labels):
     features = _svm_features(x, idx, normalizer)
     y_true = np.asarray(y[idx], dtype=np.int64)
     y_pred = model.predict(features)
-    raw_prob = model.predict_proba(features)
-    y_prob = np.zeros((raw_prob.shape[0], len(labels)), dtype=np.float32)
-    for col, cls in enumerate(model.classes_):
-        matches = np.flatnonzero(np.asarray(labels, dtype=np.int64) == int(cls))
-        if len(matches):
-            y_prob[:, matches[0]] = raw_prob[:, col]
-    metrics = _metrics_from_arrays(y_true, y_pred, y_prob)
+    has_probability = hasattr(model, "predict_proba")
     try:
-        metrics["loss"] = float(log_loss(y_true, y_prob, labels=labels))
+        raw_scores = model.predict_proba(features) if has_probability else model.decision_function(features)
+        score_kind = "probability" if has_probability else "decision"
+    except Exception:
+        raw_scores = model.decision_function(features)
+        score_kind = "decision"
+    y_score = _align_class_columns(raw_scores, model.classes_, labels)
+    metrics = _metrics_from_arrays(y_true, y_pred, y_score)
+    try:
+        if score_kind == "probability":
+            metrics["loss"] = float(log_loss(y_true, y_score, labels=labels))
+        else:
+            metrics["loss"] = float(1.0 - metrics["balanced_accuracy"])
     except ValueError:
-        metrics["loss"] = np.nan
+        metrics["loss"] = float(1.0 - metrics["balanced_accuracy"])
     return metrics
 
 
@@ -438,8 +538,12 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     bfgcn_num_out=16, bfgcn_att_hidden=16,
                     bfgcn_classifier_hidden=32, bfgcn_avgpool=2,
                     bfgcn_dropout=0.0, bfgcn_domain_weight=1.0,
-                    svm_kernel="rbf", svm_c=1.0, svm_gamma="scale",
-                    svm_class_weight="balanced"):
+                    svm_estimator="linear-svc", svm_kernel="rbf",
+                    svm_c=1.0, svm_gamma="scale",
+                    svm_class_weight="balanced", svm_probability=False,
+                    svm_max_iter=5000, tahag_dropout=0.25,
+                    tahag_domain_weight=1.0, tahag_mmd_weight=1.0,
+                    tahag_adaptive=True, tahag_attention=True):
     torch.manual_seed(int(seed))
     np.random.seed(int(seed))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -465,14 +569,25 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
             gamma = float(gamma)
         train_features = _svm_features(x, split["train"], normalizer)
         train_labels = np.asarray(y[split["train"]], dtype=np.int64)
-        model = SVC(
-            C=float(svm_c),
-            kernel=str(svm_kernel),
-            gamma=gamma,
-            class_weight=class_weight,
-            probability=True,
-            random_state=int(seed),
-        )
+        if str(svm_estimator) == "linear-svc":
+            model = LinearSVC(
+                C=float(svm_c),
+                class_weight=class_weight,
+                dual=bool(train_features.shape[0] < train_features.shape[1]),
+                max_iter=int(svm_max_iter),
+                random_state=int(seed),
+            )
+        elif str(svm_estimator) == "svc":
+            model = SVC(
+                C=float(svm_c),
+                kernel=str(svm_kernel),
+                gamma=gamma,
+                class_weight=class_weight,
+                probability=bool(svm_probability),
+                random_state=int(seed),
+            )
+        else:
+            raise ValueError("Unknown svm_estimator: {}".format(svm_estimator))
         model.fit(train_features, train_labels)
         train_metrics = _evaluate_svm(model, x, y, split["train"], normalizer, class_labels)
         val_metrics = _evaluate_svm(model, x, y, split["val"], normalizer, class_labels)
@@ -533,6 +648,13 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                             classifier_hidden=bfgcn_classifier_hidden,
                             avgpool=bfgcn_avgpool,
                             dropout=bfgcn_dropout).to(device)
+    elif model_type == "tahag":
+        model = build_tahag(
+            x.shape[1], nclasses,
+            dropout=tahag_dropout,
+            adaptive=tahag_adaptive,
+            attention=tahag_attention,
+        ).to(device)
     else:
         raise ValueError("Unknown model_type: {}".format(model_type))
     optimizer = make_optimizer(model, lr=lr, weight_decay=weight_decay,
@@ -547,19 +669,21 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                               normalizer=normalizer)
     test_ds = EEGWindowDataset(x, y, domains, split["test"], augment=False,
                                normalizer=normalizer)
-    if model_type == "bfgcn":
-        collate = BFGCNCollator(dataset["fs"])
+    if model_type in ["bfgcn", "tahag"]:
+        collate = BFGCNCollator(dataset["fs"]) if model_type == "bfgcn" else TAHAGCollator(dataset["fs"])
         target_domain_ds = EEGWindowDataset(
             x, y, domains, split["test"], augment=False, normalizer=normalizer
         )
-        drop_source = len(train_ds) > int(batch_size)
-        drop_target = len(target_domain_ds) > int(batch_size)
+        domain_batch_size = int(min(int(batch_size), len(train_ds), len(target_domain_ds)))
+        domain_batch_size = max(1, domain_batch_size)
+        drop_source = len(train_ds) > domain_batch_size
+        drop_target = len(target_domain_ds) > domain_batch_size
         train_loader = DataLoader(
-            train_ds, batch_size=batch_size, shuffle=True,
+            train_ds, batch_size=domain_batch_size, shuffle=True,
             drop_last=drop_source, collate_fn=collate,
         )
         target_domain_loader = DataLoader(
-            target_domain_ds, batch_size=batch_size, shuffle=True,
+            target_domain_ds, batch_size=domain_batch_size, shuffle=True,
             drop_last=drop_target, collate_fn=collate,
         )
         train_eval_loader = DataLoader(
@@ -579,7 +703,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
 
     best_state, best_loss, best_epoch, bad_epochs = None, float("inf"), None, 0
     history = []
-    target_iter = _cycle_loader(target_domain_loader) if model_type == "bfgcn" else None
+    target_iter = _cycle_loader(target_domain_loader) if model_type in ["bfgcn", "tahag"] else None
     domain_loss_fn = torch.nn.NLLLoss()
     for epoch in range(1, int(epochs) + 1):
         model.train()
@@ -606,6 +730,25 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     ])
                     domain_loss = domain_loss_fn(domain_logits, domain_labels)
                     loss = class_loss + float(bfgcn_domain_weight) * domain_loss
+            elif model_type == "tahag":
+                progress = (float(epoch - 1) + float(step) / max(1, len(train_loader))) / max(1, int(epochs))
+                alpha = float(2.0 / (1.0 + np.exp(-10.0 * progress)) - 1.0) if target_adapt else 0.0
+                target_batch = next(target_iter) if target_adapt else None
+                logits, domain_logits, mmd_loss, yb, _ = _tahag_forward_logits(
+                    model, batch, device, target_batch=target_batch, alpha=alpha
+                )
+                class_loss = loss_fn(logits, yb.to(logits.device))
+                loss = class_loss
+                if target_adapt:
+                    target_y = target_batch[1].to(device)
+                    domain_labels = torch.cat([
+                        torch.zeros(yb.shape[0], dtype=torch.long, device=device),
+                        torch.ones(target_y.shape[0], dtype=torch.long, device=device),
+                    ])
+                    domain_loss = loss_fn(domain_logits, domain_labels)
+                    loss = (class_loss
+                            + float(tahag_domain_weight) * domain_loss
+                            + float(tahag_mmd_weight) * alpha * mmd_loss)
             else:
                 xb, yb, db = batch
                 xb = xb.to(device)
@@ -616,7 +759,12 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
             loss.backward()
             optimizer.step()
             batch_losses.append(float(loss.detach().cpu().item()))
-        val_metrics = evaluate_bfgcn(model, val_loader, device) if model_type == "bfgcn" else evaluate(model, val_loader, device)
+        if model_type == "bfgcn":
+            val_metrics = evaluate_bfgcn(model, val_loader, device)
+        elif model_type == "tahag":
+            val_metrics = evaluate_tahag(model, val_loader, device)
+        else:
+            val_metrics = evaluate(model, val_loader, device)
         row = {"epoch": epoch, "train_loss": float(np.mean(batch_losses)),
                "val_loss": val_metrics["loss"],
                "val_bacc": val_metrics["balanced_accuracy"]}
@@ -641,6 +789,10 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         train_metrics = evaluate_bfgcn(model, train_eval_loader, device)
         val_metrics = evaluate_bfgcn(model, val_loader, device)
         test_metrics = evaluate_bfgcn(model, test_loader, device)
+    elif model_type == "tahag":
+        train_metrics = evaluate_tahag(model, train_eval_loader, device)
+        val_metrics = evaluate_tahag(model, val_loader, device)
+        test_metrics = evaluate_tahag(model, test_loader, device)
     else:
         train_metrics = evaluate(model, train_eval_loader, device)
         val_metrics = evaluate(model, val_loader, device)

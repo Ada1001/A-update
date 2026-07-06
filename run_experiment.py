@@ -25,6 +25,8 @@ def _model_label(args):
         return "eegnet"
     if args.model == "bfgcn":
         return "bfgcn"
+    if args.model == "tahag":
+        return "tahag"
     if args.model == "svm":
         return "svm"
     if args.bnorm == "spddsbn":
@@ -70,7 +72,7 @@ def parse_args():
     parser.add_argument("--cog-paradigm", choices=["nback", "matb"], default="nback")
     parser.add_argument("--protocol", choices=["single_session", "cog_multi_session", "loso"],
                         required=True)
-    parser.add_argument("--model", choices=["tsmnet", "eegconformer", "eegnet", "bfgcn", "svm"],
+    parser.add_argument("--model", choices=["tsmnet", "eegconformer", "eegnet", "bfgcn", "tahag", "svm"],
                         default="tsmnet")
     parser.add_argument("--subject", type=int, default=None,
                         help="Evaluate one subject only. Default: run all subjects.")
@@ -111,12 +113,24 @@ def parse_args():
     parser.add_argument("--bfgcn-avgpool", type=int, default=2)
     parser.add_argument("--bfgcn-dropout", type=float, default=0.0)
     parser.add_argument("--bfgcn-domain-weight", type=float, default=1.0)
+    parser.add_argument("--tahag-dropout", type=float, default=0.25)
+    parser.add_argument("--tahag-domain-weight", type=float, default=1.0)
+    parser.add_argument("--tahag-mmd-weight", type=float, default=1.0)
+    parser.add_argument("--no-tahag-adaptive", action="store_true")
+    parser.add_argument("--no-tahag-attention", action="store_true")
+    parser.add_argument("--svm-estimator", default="linear-svc",
+                        choices=["linear-svc", "svc"],
+                        help="linear-svc is the fast default; svc enables kernel SVM.")
     parser.add_argument("--svm-kernel", default="rbf",
                         choices=["linear", "poly", "rbf", "sigmoid"])
     parser.add_argument("--svm-c", type=float, default=1.0)
     parser.add_argument("--svm-gamma", default="scale")
     parser.add_argument("--svm-class-weight", default="balanced",
                         help="SVM class_weight; use 'none' to disable.")
+    parser.add_argument("--svm-probability", action="store_true",
+                        help="Enable SVC probability calibration. Slow; only used with --svm-estimator svc.")
+    parser.add_argument("--svm-max-iter", type=int, default=5000,
+                        help="Maximum iterations for LinearSVC.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-size", type=float, default=0.2,
                         help="Validation fraction for LOSO source subjects and COG fallback splits.")
@@ -177,7 +191,7 @@ def main():
     subjects = [args.subject] if args.subject is not None else iter_eval_subjects(
         dataset["meta"], args.protocol, dataset["name"])
     augment = (args.dataset in ["stew", "eegmat"]) and (not args.no_augment)
-    target_adapt = (not args.no_target_adapt) and args.model in ["tsmnet", "bfgcn"]
+    target_adapt = (not args.no_target_adapt) and args.model in ["tsmnet", "bfgcn", "tahag"]
     artifact_z = None if args.no_artifact_reject else args.artifact_z
 
     run_name = run_directory_name(dataset["name"], args.protocol, args.model, args.bnorm)
@@ -230,10 +244,18 @@ def main():
             bfgcn_avgpool=args.bfgcn_avgpool,
             bfgcn_dropout=args.bfgcn_dropout,
             bfgcn_domain_weight=args.bfgcn_domain_weight,
+            tahag_dropout=args.tahag_dropout,
+            tahag_domain_weight=args.tahag_domain_weight,
+            tahag_mmd_weight=args.tahag_mmd_weight,
+            tahag_adaptive=not args.no_tahag_adaptive,
+            tahag_attention=not args.no_tahag_attention,
+            svm_estimator=args.svm_estimator,
             svm_kernel=args.svm_kernel,
             svm_c=args.svm_c,
             svm_gamma=args.svm_gamma,
             svm_class_weight=args.svm_class_weight,
+            svm_probability=args.svm_probability,
+            svm_max_iter=args.svm_max_iter,
         )
         row = {
             "dataset": dataset["name"],
@@ -307,10 +329,18 @@ def main():
             "bfgcn_avgpool": args.bfgcn_avgpool if args.model == "bfgcn" else "",
             "bfgcn_dropout": args.bfgcn_dropout if args.model == "bfgcn" else "",
             "bfgcn_domain_weight": args.bfgcn_domain_weight if args.model == "bfgcn" else "",
+            "tahag_dropout": args.tahag_dropout if args.model == "tahag" else "",
+            "tahag_domain_weight": args.tahag_domain_weight if args.model == "tahag" else "",
+            "tahag_mmd_weight": args.tahag_mmd_weight if args.model == "tahag" else "",
+            "tahag_adaptive": (not args.no_tahag_adaptive) if args.model == "tahag" else "",
+            "tahag_attention": (not args.no_tahag_attention) if args.model == "tahag" else "",
+            "svm_estimator": args.svm_estimator if args.model == "svm" else "",
             "svm_kernel": args.svm_kernel if args.model == "svm" else "",
             "svm_c": args.svm_c if args.model == "svm" else "",
             "svm_gamma": args.svm_gamma if args.model == "svm" else "",
             "svm_class_weight": args.svm_class_weight if args.model == "svm" else "",
+            "svm_probability": args.svm_probability if args.model == "svm" else "",
+            "svm_max_iter": args.svm_max_iter if args.model == "svm" else "",
             "val_size": args.val_size,
             "single_val_size": args.single_val_size,
             "test_size": args.test_size,

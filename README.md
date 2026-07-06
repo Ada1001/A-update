@@ -1,6 +1,6 @@
-# TSMNet, EEG-Conformer, EEGNet, BF-GCN, and SVM Experiment Commands
+# TSMNet, EEG-Conformer, EEGNet, BF-GCN, TAHAG, and SVM Experiment Commands
 
-This file lists the full commands for running TSMNet, EEG-Conformer, EEGNet, BF-GCN, and SVM experiments on STEW, EEGMAT, and COG-BCI.
+This file lists the full commands for running TSMNet, EEG-Conformer, EEGNet, BF-GCN, TAHAG, and SVM experiments on STEW, EEGMAT, and COG-BCI.
 
 Before formal training, rebuild strict caches once and inspect the split to confirm sampling rate, subject scope, train/validation/test counts, and subject-disjoint validation where applicable. Older caches with record-level standardization are rejected by the loader.
 
@@ -162,9 +162,31 @@ For a no-target-feature ablation, append:
 --no-target-adapt
 ```
 
+## TAHAG Baseline
+
+TAHAG uses its own target-domain adaptation. Source training windows provide class labels; unlabeled target/test windows participate through gradient-reversal domain alignment and hidden-layer MMD. The adapter uses 5-band log-power graph node features from each normalized 1 s EEG window, with adaptive graph learning and feature attention.
+
+Use `--model tahag` with any dataset/protocol command above. Examples:
+
+```powershell
+python run_experiment.py --model tahag --dataset stew --protocol loso --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model tahag --dataset eegmat --protocol single_session --target-fs 250 --epochs 30 --batch-size 64
+```
+
+For a source-only ablation, append:
+
+```powershell
+--no-target-adapt
+```
+
+Useful tunable parameters are `--tahag-dropout`, `--tahag-domain-weight`, `--tahag-mmd-weight`, `--no-tahag-adaptive`, and `--no-tahag-attention`.
+
 ## SVM Baseline
 
-SVM has no cross-domain adaptation in this project. It uses the same source-fitted robust normalization as the neural models, flattens each 1 s EEG window, and trains `SVC(probability=True)` with RBF kernel and balanced class weights by default.
+SVM has no cross-domain adaptation in this project. It uses the same source-fitted robust normalization as the neural models and flattens each 1 s EEG window. The default is fast `LinearSVC` with balanced class weights; AUC is computed from the decision function. Kernel SVM is available for ablation with `--svm-estimator svc`.
 
 Use `--model svm` with any dataset/protocol command above. Examples:
 
@@ -176,7 +198,7 @@ python run_experiment.py --model svm --dataset stew --protocol single_session --
 python run_experiment.py --model svm --dataset eegmat --protocol loso --target-fs 250 --epochs 1 --batch-size 64
 ```
 
-Useful tunable parameters are `--svm-kernel`, `--svm-c`, `--svm-gamma`, and `--svm-class-weight`. `--epochs` is accepted for command compatibility but SVM training runs once.
+Useful tunable parameters are `--svm-estimator`, `--svm-kernel`, `--svm-c`, `--svm-gamma`, `--svm-class-weight`, `--svm-max-iter`, and `--svm-probability`. `--epochs` is accepted for command compatibility but SVM training runs once. `--svm-probability` is intentionally off by default because SVC probability calibration can make LOSO runs several times slower.
 
 ## Pre-run Audit Checklist
 
@@ -185,7 +207,7 @@ Useful tunable parameters are `--svm-kernel`, `--svm-c`, `--svm-gamma`, and `--s
 - `loso` holds out one target subject and selects validation from source subjects only.
 - Cache construction performs filtering/resampling/windowing only. Robust normalization is fitted inside each split from source training windows only.
 - Train metrics are evaluated on non-augmented training windows; validation and test are also non-augmented.
-- EEG-Conformer, EEGNet, BF-GCN, and SVM hyperparameters in `run_experiment.py` and `run_batch_experiments.py` are passed to the corresponding training code.
+- EEG-Conformer, EEGNet, BF-GCN, TAHAG, and SVM hyperparameters in `run_experiment.py` and `run_batch_experiments.py` are passed to the corresponding training code.
 - Keep `data/`, `outputs/`, `__pycache__/`, and `*.pyc` out of the source release.
 
 ## Batch Runs
@@ -193,7 +215,7 @@ Useful tunable parameters are `--svm-kernel`, `--svm-c`, `--svm-gamma`, and `--s
 Run multiple datasets, protocols, models, and COG-BCI paradigms in one command:
 
 ```powershell
-python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models tsmnet,eegconformer,eegnet,bfgcn,svm --epochs 30 --batch-size 64
+python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models tsmnet,eegconformer,eegnet,bfgcn,tahag,svm --epochs 30 --batch-size 64
 ```
 
 Preview commands without running:
@@ -204,7 +226,7 @@ python run_batch_experiments.py --datasets stew,eegmat --protocols single_sessio
 
 ## Baseline Defaults
 
-Baseline defaults are aligned with the local reference implementations where explicit examples are available: EEG-Conformer uses the 1 s Conformer setting family (`emb_size=40`, `depth=6`, `num_heads=5`), EEGNet follows `EEGNet/trainEEGNet.py` (`64/4/2`), and BF-GCN follows `BF-GCN/Simple_Demo.py` (`kadj=2`, `num_out=16`, `att_hidden=16`, `classifier_hidden=32`, `avgpool=2`). SVM uses a standard RBF kernel with `C=1.0`, `gamma=scale`, and balanced class weights. For formal reporting, keep the default run and optionally add a small validation-only sweep or sensitivity analysis; do not tune on target/test labels.
+Baseline defaults are aligned with the local reference implementations where explicit examples are available: EEG-Conformer uses the 1 s Conformer setting family (`emb_size=40`, `depth=6`, `num_heads=5`), EEGNet follows `EEGNet/trainEEGNet.py` (`64/4/2`), and BF-GCN follows `BF-GCN/Simple_Demo.py` (`kadj=2`, `num_out=16`, `att_hidden=16`, `classifier_hidden=32`, `avgpool=2`). TAHAG follows the independent-transfer setting: adaptive graph learning, attention, source classification, GRL domain loss, and MMD loss. SVM defaults to `LinearSVC` because flattened EEG windows are high-dimensional and LOSO repeatedly trains on thousands of windows; RBF `SVC` remains available as an explicitly reported slow ablation. For formal reporting, keep the default run and optionally add a small validation-only sweep or sensitivity analysis; do not tune on target/test labels.
 
 STEW:
 

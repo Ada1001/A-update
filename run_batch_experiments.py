@@ -15,8 +15,8 @@ def parse_args():
                         help="Comma-separated: stew,eegmat,cog-bci")
     parser.add_argument("--protocols", default="single_session,loso",
                         help="Comma-separated: single_session,cog_multi_session,loso")
-    parser.add_argument("--models", default="tsmnet,eegconformer,eegnet,bfgcn,svm",
-                        help="Comma-separated: tsmnet,eegconformer,eegnet,bfgcn,svm")
+    parser.add_argument("--models", default="tsmnet,eegconformer,eegnet,bfgcn,tahag,svm",
+                        help="Comma-separated: tsmnet,eegconformer,eegnet,bfgcn,tahag,svm")
     parser.add_argument("--cog-paradigms", default="nback,matb",
                         help="Comma-separated COG-BCI paradigms.")
     parser.add_argument("--data-root", default="data")
@@ -51,11 +51,20 @@ def parse_args():
     parser.add_argument("--bfgcn-avgpool", type=int, default=2)
     parser.add_argument("--bfgcn-dropout", type=float, default=0.0)
     parser.add_argument("--bfgcn-domain-weight", type=float, default=1.0)
+    parser.add_argument("--tahag-dropout", type=float, default=0.25)
+    parser.add_argument("--tahag-domain-weight", type=float, default=1.0)
+    parser.add_argument("--tahag-mmd-weight", type=float, default=1.0)
+    parser.add_argument("--no-tahag-adaptive", action="store_true")
+    parser.add_argument("--no-tahag-attention", action="store_true")
+    parser.add_argument("--svm-estimator", default="linear-svc",
+                        choices=["linear-svc", "svc"])
     parser.add_argument("--svm-kernel", default="rbf",
                         choices=["linear", "poly", "rbf", "sigmoid"])
     parser.add_argument("--svm-c", type=float, default=1.0)
     parser.add_argument("--svm-gamma", default="scale")
     parser.add_argument("--svm-class-weight", default="balanced")
+    parser.add_argument("--svm-probability", action="store_true")
+    parser.add_argument("--svm-max-iter", type=int, default=5000)
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--no-augment", action="store_true")
     parser.add_argument("--no-target-adapt", action="store_true")
@@ -128,13 +137,27 @@ def main():
                             "--bfgcn-dropout", str(args.bfgcn_dropout),
                             "--bfgcn-domain-weight", str(args.bfgcn_domain_weight),
                         ])
+                    if model == "tahag":
+                        cmd.extend([
+                            "--tahag-dropout", str(args.tahag_dropout),
+                            "--tahag-domain-weight", str(args.tahag_domain_weight),
+                            "--tahag-mmd-weight", str(args.tahag_mmd_weight),
+                        ])
+                        if args.no_tahag_adaptive:
+                            cmd.append("--no-tahag-adaptive")
+                        if args.no_tahag_attention:
+                            cmd.append("--no-tahag-attention")
                     if model == "svm":
                         cmd.extend([
+                            "--svm-estimator", str(args.svm_estimator),
                             "--svm-kernel", str(args.svm_kernel),
                             "--svm-c", str(args.svm_c),
                             "--svm-gamma", str(args.svm_gamma),
                             "--svm-class-weight", str(args.svm_class_weight),
+                            "--svm-max-iter", str(args.svm_max_iter),
                         ])
+                        if args.svm_probability:
+                            cmd.append("--svm-probability")
                     if args.rebuild_cache:
                         cmd.append("--rebuild-cache")
                     if args.no_augment:
