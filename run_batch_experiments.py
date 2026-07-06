@@ -15,8 +15,8 @@ def parse_args():
                         help="Comma-separated: stew,eegmat,cog-bci")
     parser.add_argument("--protocols", default="single_session,loso",
                         help="Comma-separated: single_session,cog_multi_session,loso")
-    parser.add_argument("--models", default="tsmnet,eegconformer,eegnet,bfgcn",
-                        help="Comma-separated: tsmnet,eegconformer,eegnet,bfgcn")
+    parser.add_argument("--models", default="tsmnet,eegconformer,eegnet,bfgcn,mdtn-gmda",
+                        help="Comma-separated: tsmnet,eegconformer,eegnet,bfgcn,mdtn-gmda")
     parser.add_argument("--cog-paradigms", default="nback,matb",
                         help="Comma-separated COG-BCI paradigms.")
     parser.add_argument("--data-root", default="data")
@@ -26,6 +26,7 @@ def parse_args():
     parser.add_argument("--target-fs", default=None,
                         help="Optional sampling rate applied to all runs.")
     parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
@@ -34,6 +35,11 @@ def parse_args():
     parser.add_argument("--single-val-size", type=float, default=0.125)
     parser.add_argument("--test-size", type=float, default=0.2)
     parser.add_argument("--bnorm", default="spddsbn", choices=["spddsbn", "spdbn", "none"])
+    parser.add_argument("--conformer-emb-size", type=int, default=40)
+    parser.add_argument("--conformer-depth", type=int, default=6)
+    parser.add_argument("--conformer-num-heads", type=int, default=5)
+    parser.add_argument("--conformer-dropout", type=float, default=0.5)
+    parser.add_argument("--conformer-classifier-hidden", type=int, default=256)
     parser.add_argument("--eegnet-temporal-filters", type=int, default=8)
     parser.add_argument("--eegnet-spatial-filters", type=int, default=2)
     parser.add_argument("--eegnet-dropout", type=float, default=0.5)
@@ -45,6 +51,16 @@ def parse_args():
     parser.add_argument("--bfgcn-avgpool", type=int, default=2)
     parser.add_argument("--bfgcn-dropout", type=float, default=0.0)
     parser.add_argument("--bfgcn-domain-weight", type=float, default=1.0)
+    parser.add_argument("--mdtn-hidden-dim", type=int, default=64)
+    parser.add_argument("--mdtn-k-length", type=int, default=16)
+    parser.add_argument("--mdtn-graph-k", type=int, default=3)
+    parser.add_argument("--mdtn-num-heads", type=int, default=4)
+    parser.add_argument("--mdtn-dropout", type=float, default=0.5)
+    parser.add_argument("--mdtn-lambda-match", type=float, default=0.1)
+    parser.add_argument("--mdtn-alpha", type=float, default=0.01)
+    parser.add_argument("--mdtn-beta", type=float, default=0.01)
+    parser.add_argument("--mdtn-l1-weight", type=float, default=0.01)
+    parser.add_argument("--mdtn-max-iter", type=int, default=1000)
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--no-augment", action="store_true")
     parser.add_argument("--no-target-adapt", action="store_true")
@@ -77,6 +93,7 @@ def main():
                         "--cache-root", args.cache_root,
                         "--master-summary", args.master_summary,
                         "--epochs", str(args.epochs),
+                        "--patience", str(args.patience),
                         "--batch-size", str(args.batch_size),
                         "--lr", str(args.lr),
                         "--weight-decay", str(args.weight_decay),
@@ -91,6 +108,14 @@ def main():
                         cmd.extend(["--cog-paradigm", paradigm])
                     if model == "tsmnet":
                         cmd.extend(["--bnorm", args.bnorm])
+                    if model == "eegconformer":
+                        cmd.extend([
+                            "--conformer-emb-size", str(args.conformer_emb_size),
+                            "--conformer-depth", str(args.conformer_depth),
+                            "--conformer-num-heads", str(args.conformer_num_heads),
+                            "--conformer-dropout", str(args.conformer_dropout),
+                            "--conformer-classifier-hidden", str(args.conformer_classifier_hidden),
+                        ])
                     if model == "eegnet":
                         cmd.extend([
                             "--eegnet-temporal-filters", str(args.eegnet_temporal_filters),
@@ -107,6 +132,19 @@ def main():
                             "--bfgcn-avgpool", str(args.bfgcn_avgpool),
                             "--bfgcn-dropout", str(args.bfgcn_dropout),
                             "--bfgcn-domain-weight", str(args.bfgcn_domain_weight),
+                        ])
+                    if model == "mdtn-gmda":
+                        cmd.extend([
+                            "--mdtn-hidden-dim", str(args.mdtn_hidden_dim),
+                            "--mdtn-k-length", str(args.mdtn_k_length),
+                            "--mdtn-graph-k", str(args.mdtn_graph_k),
+                            "--mdtn-num-heads", str(args.mdtn_num_heads),
+                            "--mdtn-dropout", str(args.mdtn_dropout),
+                            "--mdtn-lambda-match", str(args.mdtn_lambda_match),
+                            "--mdtn-alpha", str(args.mdtn_alpha),
+                            "--mdtn-beta", str(args.mdtn_beta),
+                            "--mdtn-l1-weight", str(args.mdtn_l1_weight),
+                            "--mdtn-max-iter", str(args.mdtn_max_iter),
                         ])
                     if args.rebuild_cache:
                         cmd.append("--rebuild-cache")

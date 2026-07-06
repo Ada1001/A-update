@@ -1,6 +1,6 @@
-# TSMNet, EEG-Conformer, EEGNet, and BF-GCN Experiment Commands
+# TSMNet, EEG-Conformer, EEGNet, BF-GCN, and MDTN-GMDA Experiment Commands
 
-This file lists the full commands for running TSMNet, EEG-Conformer, EEGNet, and BF-GCN experiments on STEW, EEGMAT, and COG-BCI.
+This file lists the full commands for running TSMNet, EEG-Conformer, EEGNet, BF-GCN, and MDTN-GMDA experiments on STEW, EEGMAT, and COG-BCI.
 
 Before formal training, rebuild strict caches once and inspect the split to confirm sampling rate, subject scope, train/validation/test counts, and subject-disjoint validation where applicable. Older caches with record-level standardization are rejected by the loader.
 
@@ -112,11 +112,15 @@ Example:
 python run_experiment.py --dataset eegmat --protocol loso --cache outputs/cache/eegmat_all_250hz_1s.npz --target-fs 250 --output outputs/tsmnet_no_target_adapt --epochs 30 --batch-size 64 --no-target-adapt
 ```
 
+For fair comparison against EEG-Conformer and EEGNet, report this no-target-adapt TSMNet variant alongside the default adaptive TSMNet result. The default adaptive result is transductive because it uses unlabeled target/test windows for model adaptation.
+
 ## EEG-Conformer Baseline
 
 EEG-Conformer has no cross-domain adaptation in this project. Target-domain windows are used only for final testing.
 
 Use `--model eegconformer` with any dataset/protocol command above.
+
+Useful tunable parameters are exposed for formal sweeps: `--conformer-emb-size`, `--conformer-depth`, `--conformer-num-heads`, `--conformer-dropout`, `--conformer-classifier-hidden`, plus global `--epochs` and `--patience`.
 
 ## EEGNet Baseline
 
@@ -135,6 +139,8 @@ python run_experiment.py --model eegnet --dataset eegmat --protocol single_sessi
 ```powershell
 python run_experiment.py --model eegnet --dataset cog-bci --cog-paradigm nback --protocol cog_multi_session --target-fs 250 --epochs 30 --batch-size 64
 ```
+
+The local EEGNet implementation is intentionally lightweight. For stronger EEGNet baselines, sweep `--eegnet-temporal-filters`, `--eegnet-spatial-filters`, `--eegnet-dropout`, and `--eegnet-avgpool-factor`, and consider longer `--epochs` with a larger `--patience`.
 
 ## BF-GCN Baseline
 
@@ -160,12 +166,34 @@ For a no-target-feature ablation, append:
 --no-target-adapt
 ```
 
+BF-GCN is graph-feature based rather than raw-waveform based. It may need dataset-specific tuning of `--bfgcn-domain-weight`, `--bfgcn-num-out`, `--bfgcn-classifier-hidden`, and `--bfgcn-dropout`, especially in single-session experiments where the source and target are time blocks from the same subject rather than different subjects.
+
+## MDTN-GMDA Baseline
+
+MDTN-GMDA uses its own transfer mechanism: source train windows provide labels, while unlabeled target/test windows participate through WarmStartGRL, graph discriminator, marginal MMD, conditional pseudo-label MMD, and graph matching losses.
+
+Use `--model mdtn-gmda` with any dataset/protocol command above. Examples:
+
+```powershell
+python run_experiment.py --model mdtn-gmda --dataset stew --protocol loso --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model mdtn-gmda --dataset eegmat --protocol single_session --target-fs 250 --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model mdtn-gmda --dataset cog-bci --cog-paradigm nback --protocol cog_multi_session --target-fs 250 --epochs 30 --batch-size 64
+```
+
+Use `--no-target-adapt` for the source-only MDTN ablation. Useful tunable parameters are `--mdtn-hidden-dim`, `--mdtn-k-length`, `--mdtn-graph-k`, `--mdtn-num-heads`, `--mdtn-dropout`, `--mdtn-lambda-match`, `--mdtn-alpha`, and `--mdtn-beta`.
+
 ## Batch Runs
 
 Run multiple datasets, protocols, models, and COG-BCI paradigms in one command:
 
 ```powershell
-python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models tsmnet,eegconformer,eegnet,bfgcn --epochs 30 --batch-size 64
+python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models tsmnet,eegconformer,eegnet,bfgcn,mdtn-gmda --epochs 30 --batch-size 64
 ```
 
 Preview commands without running:
