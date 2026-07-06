@@ -25,8 +25,6 @@ def _model_label(args):
         return "eegnet"
     if args.model == "bfgcn":
         return "bfgcn"
-    if args.model == "mdtn-gmda":
-        return "mdtn-gmda"
     if args.bnorm == "spddsbn":
         return "tsmnet_spddsbn"
     if args.bnorm == "spdbn":
@@ -70,7 +68,7 @@ def parse_args():
     parser.add_argument("--cog-paradigm", choices=["nback", "matb"], default="nback")
     parser.add_argument("--protocol", choices=["single_session", "cog_multi_session", "loso"],
                         required=True)
-    parser.add_argument("--model", choices=["tsmnet", "eegconformer", "eegnet", "bfgcn", "mdtn-gmda"],
+    parser.add_argument("--model", choices=["tsmnet", "eegconformer", "eegnet", "bfgcn"],
                         default="tsmnet")
     parser.add_argument("--subject", type=int, default=None,
                         help="Evaluate one subject only. Default: run all subjects.")
@@ -83,8 +81,6 @@ def parse_args():
                         help="Target sampling rate. Default: STEW=128 Hz, EEGMAT/COG-BCI=250 Hz.")
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--patience", type=int, default=8,
-                        help="Early-stopping patience measured in epochs.")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
@@ -111,16 +107,6 @@ def parse_args():
     parser.add_argument("--bfgcn-avgpool", type=int, default=2)
     parser.add_argument("--bfgcn-dropout", type=float, default=0.0)
     parser.add_argument("--bfgcn-domain-weight", type=float, default=1.0)
-    parser.add_argument("--mdtn-hidden-dim", type=int, default=64)
-    parser.add_argument("--mdtn-k-length", type=int, default=16)
-    parser.add_argument("--mdtn-graph-k", type=int, default=3)
-    parser.add_argument("--mdtn-num-heads", type=int, default=4)
-    parser.add_argument("--mdtn-dropout", type=float, default=0.5)
-    parser.add_argument("--mdtn-lambda-match", type=float, default=0.1)
-    parser.add_argument("--mdtn-alpha", type=float, default=0.01)
-    parser.add_argument("--mdtn-beta", type=float, default=0.01)
-    parser.add_argument("--mdtn-l1-weight", type=float, default=0.01)
-    parser.add_argument("--mdtn-max-iter", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-size", type=float, default=0.2,
                         help="Validation fraction for LOSO source subjects and COG fallback splits.")
@@ -184,7 +170,7 @@ def main():
     subjects = [args.subject] if args.subject is not None else iter_eval_subjects(
         dataset["meta"], args.protocol, dataset["name"])
     augment = (args.dataset in ["stew", "eegmat"]) and (not args.no_augment)
-    target_adapt = (not args.no_target_adapt) and args.model in ["tsmnet", "bfgcn", "mdtn-gmda"]
+    target_adapt = (not args.no_target_adapt) and args.model in ["tsmnet", "bfgcn"]
     artifact_z = None if args.no_artifact_reject else args.artifact_z
 
     run_name = run_directory_name(dataset["name"], args.protocol, args.model, args.bnorm)
@@ -309,7 +295,6 @@ def main():
             "cache": cache,
             "output_dir": out_root,
             "epochs": args.epochs,
-            "patience": args.patience,
             "batch_size": args.batch_size,
             "lr": args.lr,
             "weight_decay": args.weight_decay,
@@ -321,11 +306,6 @@ def main():
             "eegnet_spatial_filters": args.eegnet_spatial_filters if args.model == "eegnet" else "",
             "eegnet_dropout": args.eegnet_dropout if args.model == "eegnet" else "",
             "eegnet_avgpool_factor": args.eegnet_avgpool_factor if args.model == "eegnet" else "",
-            "conformer_emb_size": args.conformer_emb_size if args.model == "eegconformer" else "",
-            "conformer_depth": args.conformer_depth if args.model == "eegconformer" else "",
-            "conformer_num_heads": args.conformer_num_heads if args.model == "eegconformer" else "",
-            "conformer_dropout": args.conformer_dropout if args.model == "eegconformer" else "",
-            "conformer_classifier_hidden": args.conformer_classifier_hidden if args.model == "eegconformer" else "",
             "bfgcn_kadj": args.bfgcn_kadj if args.model == "bfgcn" else "",
             "bfgcn_num_out": args.bfgcn_num_out if args.model == "bfgcn" else "",
             "bfgcn_att_hidden": args.bfgcn_att_hidden if args.model == "bfgcn" else "",
@@ -333,16 +313,6 @@ def main():
             "bfgcn_avgpool": args.bfgcn_avgpool if args.model == "bfgcn" else "",
             "bfgcn_dropout": args.bfgcn_dropout if args.model == "bfgcn" else "",
             "bfgcn_domain_weight": args.bfgcn_domain_weight if args.model == "bfgcn" else "",
-            "mdtn_hidden_dim": args.mdtn_hidden_dim if args.model == "mdtn-gmda" else "",
-            "mdtn_k_length": args.mdtn_k_length if args.model == "mdtn-gmda" else "",
-            "mdtn_graph_k": args.mdtn_graph_k if args.model == "mdtn-gmda" else "",
-            "mdtn_num_heads": args.mdtn_num_heads if args.model == "mdtn-gmda" else "",
-            "mdtn_dropout": args.mdtn_dropout if args.model == "mdtn-gmda" else "",
-            "mdtn_lambda_match": args.mdtn_lambda_match if args.model == "mdtn-gmda" else "",
-            "mdtn_alpha": args.mdtn_alpha if args.model == "mdtn-gmda" else "",
-            "mdtn_beta": args.mdtn_beta if args.model == "mdtn-gmda" else "",
-            "mdtn_l1_weight": args.mdtn_l1_weight if args.model == "mdtn-gmda" else "",
-            "mdtn_max_iter": args.mdtn_max_iter if args.model == "mdtn-gmda" else "",
             "val_size": args.val_size,
             "single_val_size": args.single_val_size,
             "single_folds": args.single_folds,

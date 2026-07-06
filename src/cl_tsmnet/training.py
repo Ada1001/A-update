@@ -152,8 +152,7 @@ def build_tsmnet(project_root, nchannels, nsamples, nclasses, domains,
 
 
 def build_eegconformer(nchannels, nsamples, nclasses, temporal_kernel=25,
-                       emb_size=40, depth=6, num_heads=5, dropout=0.5,
-                       classifier_hidden=256):
+                       emb_size=40, depth=6, num_heads=5, dropout=0.5):
     from .eeg_conformer import EEGConformer
 
     return EEGConformer(
@@ -165,7 +164,6 @@ def build_eegconformer(nchannels, nsamples, nclasses, temporal_kernel=25,
         num_heads=int(num_heads),
         temporal_kernel=int(temporal_kernel),
         dropout=float(dropout),
-        classifier_hidden=int(classifier_hidden),
     )
 
 
@@ -198,23 +196,6 @@ def build_bfgcn(nchannels, nclasses, kadj=2, num_out=16, att_hidden=16,
         classifier_hidden=int(classifier_hidden),
         avgpool=int(avgpool),
         dropout=float(dropout),
-    )
-
-
-def build_mdtn_gmda(nchannels, nclasses, hidden_dim=64, k_length=16,
-                    graph_k=3, num_heads=4, dropout=0.5, max_iter=1000):
-    from .mdtn_gmda import MDTNGMDAModel
-
-    return MDTNGMDAModel(
-        in_channels=int(nchannels),
-        hidden_dim=int(hidden_dim),
-        num_classes=int(nclasses),
-        num_nodes=int(nchannels),
-        k_length=int(k_length),
-        graph_k=int(graph_k),
-        num_heads=int(num_heads),
-        dropout=float(dropout),
-        max_iter=int(max_iter),
     )
 
 
@@ -428,12 +409,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     eegnet_avgpool_factor=2, bfgcn_kadj=2,
                     bfgcn_num_out=16, bfgcn_att_hidden=16,
                     bfgcn_classifier_hidden=32, bfgcn_avgpool=2,
-                    bfgcn_dropout=0.0, bfgcn_domain_weight=1.0,
-                    mdtn_hidden_dim=64, mdtn_k_length=16,
-                    mdtn_graph_k=3, mdtn_num_heads=4,
-                    mdtn_dropout=0.5, mdtn_lambda_match=0.1,
-                    mdtn_alpha=0.01, mdtn_beta=0.01,
-                    mdtn_l1_weight=0.01, mdtn_max_iter=1000):
+                    bfgcn_dropout=0.0, bfgcn_domain_weight=1.0):
     torch.manual_seed(int(seed))
     np.random.seed(int(seed))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -460,12 +436,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                              device=device)
     elif model_type == "eegconformer":
         model = build_eegconformer(x.shape[1], x.shape[2], nclasses,
-                                   temporal_kernel=temp_kernel,
-                                   emb_size=conformer_emb_size,
-                                   depth=conformer_depth,
-                                   num_heads=conformer_num_heads,
-                                   dropout=conformer_dropout,
-                                   classifier_hidden=conformer_classifier_hidden).to(device)
+                                   temporal_kernel=temp_kernel).to(device)
         target_adapt = False
     elif model_type == "eegnet":
         model = build_eegnet(x.shape[1], x.shape[2], nclasses,
@@ -482,14 +453,6 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                             classifier_hidden=bfgcn_classifier_hidden,
                             avgpool=bfgcn_avgpool,
                             dropout=bfgcn_dropout).to(device)
-    elif model_type == "mdtn-gmda":
-        model = build_mdtn_gmda(x.shape[1], nclasses,
-                                hidden_dim=mdtn_hidden_dim,
-                                k_length=mdtn_k_length,
-                                graph_k=mdtn_graph_k,
-                                num_heads=mdtn_num_heads,
-                                dropout=mdtn_dropout,
-                                max_iter=mdtn_max_iter).to(device)
     else:
         raise ValueError("Unknown model_type: {}".format(model_type))
     optimizer = make_optimizer(model, lr=lr, weight_decay=weight_decay,
@@ -504,48 +467,30 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                               normalizer=normalizer)
     test_ds = EEGWindowDataset(x, y, domains, split["test"], augment=False,
                                normalizer=normalizer)
-    if model_type in ["bfgcn", "mdtn-gmda"]:
+    if model_type == "bfgcn":
         collate = BFGCNCollator(dataset["fs"])
-        if model_type == "bfgcn":
-            target_domain_ds = EEGWindowDataset(
-                x, y, domains, split["test"], augment=False, normalizer=normalizer
-            )
-            drop_source = len(train_ds) > int(batch_size)
-            drop_target = len(target_domain_ds) > int(batch_size)
-            train_loader = DataLoader(
-                train_ds, batch_size=batch_size, shuffle=True,
-                drop_last=drop_source, collate_fn=collate,
-            )
-            target_domain_loader = DataLoader(
-                target_domain_ds, batch_size=batch_size, shuffle=True,
-                drop_last=drop_target, collate_fn=collate,
-            )
-            train_eval_loader = DataLoader(
-                train_eval_ds, batch_size=batch_size, shuffle=False, collate_fn=collate
-            )
-            val_loader = DataLoader(
-                val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate
-            )
-            test_loader = DataLoader(
-                test_ds, batch_size=batch_size, shuffle=False, collate_fn=collate
-            )
-        else:
-            target_domain_ds = EEGWindowDataset(
-                x, y, domains, split["test"], augment=False, normalizer=normalizer
-            )
-            drop_source = len(train_ds) > int(batch_size)
-            drop_target = len(target_domain_ds) > int(batch_size)
-            train_loader = DataLoader(
-                train_ds, batch_size=batch_size, shuffle=True,
-                drop_last=drop_source,
-            )
-            target_domain_loader = DataLoader(
-                target_domain_ds, batch_size=batch_size, shuffle=True,
-                drop_last=drop_target,
-            )
-            train_eval_loader = DataLoader(train_eval_ds, batch_size=batch_size, shuffle=False)
-            val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
-            test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
+        target_domain_ds = EEGWindowDataset(
+            x, y, domains, split["test"], augment=False, normalizer=normalizer
+        )
+        drop_source = len(train_ds) > int(batch_size)
+        drop_target = len(target_domain_ds) > int(batch_size)
+        train_loader = DataLoader(
+            train_ds, batch_size=batch_size, shuffle=True,
+            drop_last=drop_source, collate_fn=collate,
+        )
+        target_domain_loader = DataLoader(
+            target_domain_ds, batch_size=batch_size, shuffle=True,
+            drop_last=drop_target, collate_fn=collate,
+        )
+        train_eval_loader = DataLoader(
+            train_eval_ds, batch_size=batch_size, shuffle=False, collate_fn=collate
+        )
+        val_loader = DataLoader(
+            val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate
+        )
+        test_loader = DataLoader(
+            test_ds, batch_size=batch_size, shuffle=False, collate_fn=collate
+        )
     else:
         train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=False)
         train_eval_loader = DataLoader(train_eval_ds, batch_size=batch_size, shuffle=False)
@@ -554,17 +499,8 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
 
     best_state, best_loss, best_epoch, bad_epochs = None, float("inf"), None, 0
     history = []
-    target_iter = _cycle_loader(target_domain_loader) if model_type in ["bfgcn", "mdtn-gmda"] else None
+    target_iter = _cycle_loader(target_domain_loader) if model_type == "bfgcn" else None
     domain_loss_fn = torch.nn.NLLLoss()
-    mdtn_loss_fn = None
-    if model_type == "mdtn-gmda":
-        from .mdtn_gmda import MDTNGMDALoss
-        mdtn_loss_fn = MDTNGMDALoss(
-            lambda_match=mdtn_lambda_match,
-            alpha=mdtn_alpha,
-            beta=mdtn_beta,
-            l1_weight=mdtn_l1_weight,
-        )
     for epoch in range(1, int(epochs) + 1):
         model.train()
         batch_losses = []
@@ -590,25 +526,6 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     ])
                     domain_loss = domain_loss_fn(domain_logits, domain_labels)
                     loss = class_loss + float(bfgcn_domain_weight) * domain_loss
-            elif model_type == "mdtn-gmda":
-                xb, yb, _ = batch
-                xb = xb.to(device)
-                yb = yb.to(device)
-                if target_adapt:
-                    target_batch = next(target_iter)
-                    xt = target_batch[0].to(device)
-                    paired = min(xb.shape[0], xt.shape[0])
-                    xb = xb[:paired]
-                    yb = yb[:paired]
-                    xt = xt[:paired]
-                    outputs = model(xb, xt)
-                    loss, _, _, _ = mdtn_loss_fn(
-                        outputs[0], outputs[1], outputs[2], outputs[3],
-                        outputs[4], outputs[5], yb, outputs[6]
-                    )
-                else:
-                    logits = model(xb)
-                    loss = loss_fn(logits, yb.to(logits.device))
             else:
                 xb, yb, db = batch
                 xb = xb.to(device)
