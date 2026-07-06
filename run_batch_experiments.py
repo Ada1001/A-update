@@ -33,6 +33,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-size", type=float, default=0.2)
     parser.add_argument("--single-val-size", type=float, default=0.125)
+    parser.add_argument("--single-folds", type=int, default=5)
     parser.add_argument("--test-size", type=float, default=0.2)
     parser.add_argument("--bnorm", default="spddsbn", choices=["spddsbn", "spdbn", "none"])
     parser.add_argument("--conformer-emb-size", type=int, default=40)
@@ -40,10 +41,10 @@ def parse_args():
     parser.add_argument("--conformer-num-heads", type=int, default=5)
     parser.add_argument("--conformer-dropout", type=float, default=0.5)
     parser.add_argument("--conformer-classifier-hidden", type=int, default=256)
-    parser.add_argument("--eegnet-temporal-filters", type=int, default=8)
-    parser.add_argument("--eegnet-spatial-filters", type=int, default=2)
+    parser.add_argument("--eegnet-temporal-filters", type=int, default=64)
+    parser.add_argument("--eegnet-spatial-filters", type=int, default=4)
     parser.add_argument("--eegnet-dropout", type=float, default=0.5)
-    parser.add_argument("--eegnet-avgpool-factor", type=int, default=4)
+    parser.add_argument("--eegnet-avgpool-factor", type=int, default=2)
     parser.add_argument("--bfgcn-kadj", type=int, default=2)
     parser.add_argument("--bfgcn-num-out", type=int, default=16)
     parser.add_argument("--bfgcn-att-hidden", type=int, default=16)
@@ -100,6 +101,7 @@ def main():
                         "--seed", str(args.seed),
                         "--val-size", str(args.val_size),
                         "--single-val-size", str(args.single_val_size),
+                        "--single-folds", str(args.single_folds),
                         "--test-size", str(args.test_size),
                     ]
                     if args.target_fs is not None:

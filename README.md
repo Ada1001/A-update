@@ -140,7 +140,7 @@ python run_experiment.py --model eegnet --dataset eegmat --protocol single_sessi
 python run_experiment.py --model eegnet --dataset cog-bci --cog-paradigm nback --protocol cog_multi_session --target-fs 250 --epochs 30 --batch-size 64
 ```
 
-The local EEGNet implementation is intentionally lightweight. For stronger EEGNet baselines, sweep `--eegnet-temporal-filters`, `--eegnet-spatial-filters`, `--eegnet-dropout`, and `--eegnet-avgpool-factor`, and consider longer `--epochs` with a larger `--patience`.
+The default EEGNet command follows the local `EEGNet/trainEEGNet.py` example configuration: `--eegnet-temporal-filters 64 --eegnet-spatial-filters 4 --eegnet-avgpool-factor 2`. For ablations, sweep these parameters plus `--eegnet-dropout`, and consider longer `--epochs` with a larger `--patience`.
 
 ## BF-GCN Baseline
 
@@ -202,6 +202,10 @@ Preview commands without running:
 python run_batch_experiments.py --datasets stew,eegmat --protocols single_session,loso --models eegconformer --dry-run
 ```
 
+## Baseline Defaults
+
+Baseline defaults are aligned with the local reference implementations where explicit examples are available: EEG-Conformer uses the 1 s Conformer setting family (`emb_size=40`, `depth=6`, `num_heads=5`), EEGNet follows `EEGNet/trainEEGNet.py` (`64/4/2`), and BF-GCN follows `BF-GCN/Simple_Demo.py` (`kadj=2`, `num_out=16`, `att_hidden=16`, `classifier_hidden=32`, `avgpool=2`). MDTN-GMDA exposes its transfer-loss and graph parameters because the local code does not provide one universal dataset-optimal setting. For formal reporting, keep the default run and optionally add a small validation-only sweep or sensitivity analysis; do not tune on target/test labels.
+
 STEW:
 
 ```powershell
@@ -256,11 +260,10 @@ python run_experiment.py --model eegconformer --dataset cog-bci --cog-paradigm m
 - If `--cache` is omitted, cache names are generated automatically by dataset, paradigm, protocol, subject scope, sessions, and sampling rate.
 - Cache construction does not use full-recording standardization. Robust normalization is fitted from source-domain training windows inside each split, then applied to validation and target/test windows.
 - Artifact-window rejection is off by default for the formal protocol so the target/test set remains fixed. Use `--artifact-z <value>` only for an explicitly reported ablation.
-- `single_session` uses contiguous time blocks within each task record with train/validation/test = 70%/10%/20%; `cog_multi_session` uses COG-BCI S1/S2/S3 as train/validation/test; `loso` randomly selects `ceil(20% * source_subjects)` source subjects for validation and uses the remaining source subjects for training.
+- `single_session` uses 5-fold contiguous time-block cross-validation within each task record. Each fold uses one contiguous block per task as target/test and the remaining four blocks as source; with `--single-val-size 0.125`, each fold is approximately train/validation/test = 70%/10%/20%.
+- `cog_multi_session` uses COG-BCI S1/S2/S3 as train/validation/test; `loso` randomly selects `ceil(20% * source_subjects)` source subjects for validation and uses the remaining source subjects for training.
 - `aggregate_summary.csv` reports window-level test metrics, which are the primary metrics for this project.
 - `outputs/master_summary.csv` is append-only. Every completed run adds one row with model, dataset, protocol, settings, cache/output path, and numeric metric mean/std.
 - Full-dataset COG-BCI caches can take time to build because each subject zip is decompressed and read from EEGLAB `.set/.fdt` files.
 - Outputs are saved under `outputs/<dataset>_<protocol>_<model-or-bnorm>/` by default.
-- `summary.csv` stores per-subject/fold raw window-level train/validation/test results.
-
-For single-subject reliability, the current default favors strict time-block generalization. A 5-fold single-subject cross-validation protocol can be added as a supplementary protocol if you need lower variance, but it should be reported separately from the stricter 70/10/20 time-block split.
+- `summary.csv` stores per-subject/fold raw window-level train/validation/test results. For `single_session`, the aggregate `n` is normally `number_of_subjects * --single-folds`.

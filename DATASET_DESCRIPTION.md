@@ -39,10 +39,10 @@ This project uses 1 s non-overlapping windows for all datasets. Cache constructi
 
 ## Experiment Protocols
 
-- `single_session`: for STEW and EEGMAT, use the single session of one subject; for COG-BCI, use session 1 only. Each task record is sorted by time and split into contiguous blocks. With default settings, the proportions are train/validation/test = 70%/10%/20%. This avoids random adjacent-window mixing between train, validation, and test.
+- `single_session`: for STEW and EEGMAT, use the single session of one subject; for COG-BCI, use session 1 only. The default is 5-fold contiguous time-block cross-validation. Each task record is sorted by time and split into five contiguous blocks; in each fold, one block from every task is target/test and the remaining four blocks are source data. Validation is selected only from the source data, so target/test labels and target/test windows do not enter supervised training or validation.
 - `cog_multi_session`: COG-BCI only. For each subject, session 1 is the supervised training source, session 2 is the validation source, and session 3 is the target/test domain. Session 3 is never used for supervised training.
 - `loso`: leave-one-subject-out. The held-out subject is the target/test domain; all other subjects are the source domain. Validation is subject-disjoint from training: by default, `ceil(0.2 * number_of_source_subjects)` source subjects are randomly selected as validation subjects using the experiment seed, and the remaining source subjects form the training set.
-- Default split parameters: `--test-size 0.2` and `--single-val-size 0.125` for `single_session`, giving 70%/10%/20% because validation is taken from the remaining 80% train+validation block. `--val-size 0.2` controls LOSO source-subject validation. These parameters are exposed in both `run_experiment.py` and `inspect_datasets.py`.
+- Default split parameters: `--single-folds 5` and `--single-val-size 0.125` for `single_session`, giving approximately 70%/10%/20% train/validation/test per fold because validation is taken from the remaining 80% source block. `--val-size 0.2` controls LOSO source-subject validation. These parameters are exposed in `run_experiment.py`, `run_batch_experiments.py`, and `inspect_datasets.py`.
 
 ## Evaluation Level
 

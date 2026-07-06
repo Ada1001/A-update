@@ -169,8 +169,8 @@ def build_eegconformer(nchannels, nsamples, nclasses, temporal_kernel=25,
     )
 
 
-def build_eegnet(nchannels, nsamples, nclasses, temporal_filters=8,
-                 spatial_filters=2, dropout=0.5, avgpool_factor=4):
+def build_eegnet(nchannels, nsamples, nclasses, temporal_filters=64,
+                 spatial_filters=4, dropout=0.5, avgpool_factor=2):
     from .eegnet import EEGNet
 
     return EEGNet(
@@ -423,9 +423,9 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     conformer_emb_size=40, conformer_depth=6,
                     conformer_num_heads=5, conformer_dropout=0.5,
                     conformer_classifier_hidden=256,
-                    artifact_z=None, eegnet_temporal_filters=8,
-                    eegnet_spatial_filters=2, eegnet_dropout=0.5,
-                    eegnet_avgpool_factor=4, bfgcn_kadj=2,
+                    artifact_z=None, eegnet_temporal_filters=64,
+                    eegnet_spatial_filters=4, eegnet_dropout=0.5,
+                    eegnet_avgpool_factor=2, bfgcn_kadj=2,
                     bfgcn_num_out=16, bfgcn_att_hidden=16,
                     bfgcn_classifier_hidden=32, bfgcn_avgpool=2,
                     bfgcn_dropout=0.0, bfgcn_domain_weight=1.0,
