@@ -178,6 +178,16 @@ python run_experiment.py --model svm --dataset eegmat --protocol loso --target-f
 
 Useful tunable parameters are `--svm-kernel`, `--svm-c`, `--svm-gamma`, and `--svm-class-weight`. `--epochs` is accepted for command compatibility but SVM training runs once.
 
+## Pre-run Audit Checklist
+
+- `single_session` is the original sequential split: each task record is time-sorted, the last 20% is test, and the previous 80% is split into train/validation with `--single-val-size 0.125`.
+- `cog_multi_session` uses COG-BCI sessions 1/2/3 as train/validation/test.
+- `loso` holds out one target subject and selects validation from source subjects only.
+- Cache construction performs filtering/resampling/windowing only. Robust normalization is fitted inside each split from source training windows only.
+- Train metrics are evaluated on non-augmented training windows; validation and test are also non-augmented.
+- EEG-Conformer, EEGNet, BF-GCN, and SVM hyperparameters in `run_experiment.py` and `run_batch_experiments.py` are passed to the corresponding training code.
+- Keep `data/`, `outputs/`, `__pycache__/`, and `*.pyc` out of the source release.
+
 ## Batch Runs
 
 Run multiple datasets, protocols, models, and COG-BCI paradigms in one command:

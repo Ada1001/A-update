@@ -153,7 +153,8 @@ def build_tsmnet(project_root, nchannels, nsamples, nclasses, domains,
 
 
 def build_eegconformer(nchannels, nsamples, nclasses, temporal_kernel=25,
-                       emb_size=40, depth=6, num_heads=5, dropout=0.5):
+                       emb_size=40, depth=6, num_heads=5, dropout=0.5,
+                       classifier_hidden=256):
     from .eeg_conformer import EEGConformer
 
     return EEGConformer(
@@ -165,6 +166,7 @@ def build_eegconformer(nchannels, nsamples, nclasses, temporal_kernel=25,
         num_heads=int(num_heads),
         temporal_kernel=int(temporal_kernel),
         dropout=float(dropout),
+        classifier_hidden=int(classifier_hidden),
     )
 
 
@@ -375,7 +377,12 @@ def _evaluate_svm(model, x, y, indices, normalizer, labels):
     features = _svm_features(x, idx, normalizer)
     y_true = np.asarray(y[idx], dtype=np.int64)
     y_pred = model.predict(features)
-    y_prob = model.predict_proba(features)
+    raw_prob = model.predict_proba(features)
+    y_prob = np.zeros((raw_prob.shape[0], len(labels)), dtype=np.float32)
+    for col, cls in enumerate(model.classes_):
+        matches = np.flatnonzero(np.asarray(labels, dtype=np.int64) == int(cls))
+        if len(matches):
+            y_prob[:, matches[0]] = raw_prob[:, col]
     metrics = _metrics_from_arrays(y_true, y_pred, y_prob)
     try:
         metrics["loss"] = float(log_loss(y_true, y_prob, labels=labels))
@@ -448,7 +455,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         raise RuntimeError("Artifact rejection removed an entire split: train={}, val={}, test={}".format(
             len(split["train"]), len(split["val"]), len(split["test"])))
     selected = np.concatenate([split["train"], split["val"], split["test"]])
-    nclasses = int(len(np.unique(y[selected])))
+    nclasses = int(np.max(y[selected]) + 1)
     class_labels = np.arange(nclasses, dtype=np.int64)
     if model_type == "svm":
         target_adapt = False
@@ -508,7 +515,8 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                                    emb_size=conformer_emb_size,
                                    depth=conformer_depth,
                                    num_heads=conformer_num_heads,
-                                   dropout=conformer_dropout).to(device)
+                                   dropout=conformer_dropout,
+                                   classifier_hidden=conformer_classifier_hidden).to(device)
         target_adapt = False
     elif model_type == "eegnet":
         model = build_eegnet(x.shape[1], x.shape[2], nclasses,

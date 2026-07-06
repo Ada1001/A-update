@@ -24,4 +24,11 @@ Use `--model svm` for the classical SVM baseline. It uses the same source-fitted
 
 Use `--model bfgcn` to run the BF-GCN baseline. The adapter computes 5-band log-power node features and 4-band PLV adjacency matrices from each 1 s EEG window, then trains the original-style graph branches and gradient-reversal domain classifier without changing the TSMNet adaptation path.
 
+Current validation notes:
+
+- `single_session` is the original sequential 70%/10%/20% split, not 5-fold CV.
+- Normalization is fitted only on source training windows inside each split.
+- EEG-Conformer, EEGNet, BF-GCN, and SVM command-line hyperparameters are passed into their model/training code.
+- `__pycache__/`, `*.pyc`, `outputs/`, and `data/` are generated/local artifacts and should not be part of the reproducible source package.
+
 Cache files are literal filtered/resampled window datasets. Rebuild old caches once because older caches may contain record-level standardization and are intentionally rejected by the strict loader. Name caches by dataset, paradigm, subject scope, and sampling rate, for example `cog_nback_all_250hz_1s.npz` or `stew_all_128hz_1s.npz`.
