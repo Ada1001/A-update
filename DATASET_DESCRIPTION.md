@@ -39,14 +39,14 @@ This project uses 1 s non-overlapping windows for all datasets. Cache constructi
 
 ## Experiment Protocols
 
-- `single_session`: for STEW and EEGMAT, use the single session of one subject; for COG-BCI, use session 1 only. The default is 5-fold contiguous time-block cross-validation. Each task record is sorted by time and split into five contiguous blocks; in each fold, one block from every task is target/test and the remaining four blocks are source data. Validation is selected only from the source data, so target/test labels and target/test windows do not enter supervised training or validation.
+- `single_session`: for STEW and EEGMAT, use the single session of one subject; for COG-BCI, use session 1 only. Each task record is sorted by time and split contiguously: the last `--test-size 0.2` is target/test, and the preceding 80% source block is further split into training and validation. This restores the original sequential 70%/10%/20% single-subject protocol and avoids random adjacent-window mixing between train, validation, and test.
 - `cog_multi_session`: COG-BCI only. For each subject, session 1 is the supervised training source, session 2 is the validation source, and session 3 is the target/test domain. Session 3 is never used for supervised training.
 - `loso`: leave-one-subject-out. The held-out subject is the target/test domain; all other subjects are the source domain. Validation is subject-disjoint from training: by default, `ceil(0.2 * number_of_source_subjects)` source subjects are randomly selected as validation subjects using the experiment seed, and the remaining source subjects form the training set.
-- Default split parameters: `--single-folds 5` and `--single-val-size 0.125` for `single_session`, giving approximately 70%/10%/20% train/validation/test per fold because validation is taken from the remaining 80% source block. `--val-size 0.2` controls LOSO source-subject validation. These parameters are exposed in `run_experiment.py`, `run_batch_experiments.py`, and `inspect_datasets.py`.
+- Default split parameters: `--test-size 0.2` and `--single-val-size 0.125` for `single_session`, giving approximately 70%/10%/20% train/validation/test because validation is taken from the remaining 80% source block. `--val-size 0.2` controls LOSO source-subject validation. These parameters are exposed in `run_experiment.py`, `run_batch_experiments.py`, and `inspect_datasets.py`.
 
 ## Evaluation Level
 
-Metrics are computed at the 1 s window level, which is the standard reporting unit for many EEG workload-classification experiments using fixed-length windows. `summary.csv` stores per-subject/fold window-level metrics, and `aggregate_summary.csv` reports the mean +/- standard deviation of window-level test metrics across evaluated subjects/folds.
+Metrics are computed at the 1 s window level, which is the standard reporting unit for many EEG workload-classification experiments using fixed-length windows. `summary.csv` stores per-subject window-level metrics, and `aggregate_summary.csv` reports the mean +/- standard deviation of window-level test metrics across evaluated subjects.
 
 ## Split Count Inspection
 
@@ -83,7 +83,7 @@ The default model is the original TSMNet with SPD domain-specific batch normaliz
 
 By default, `spddsbn` uses TSMNet-style unsupervised target-domain adaptation: target/test windows are used without labels to refit domain-specific BN statistics before evaluation. This is recorded as `target_adapt=True` in `summary.csv`. Use `--no-target-adapt` for a stricter no-target-feature baseline.
 
-Use `--model eegconformer` for the EEG-Conformer baseline. The implementation keeps the original model idea, convolutional patch embedding followed by Transformer encoder and fully connected classifier, but makes channel count, window length, and class count dynamic for STEW, EEGMAT, and COG-BCI. Use `--model eegnet` for the local EEGNet baseline. The project implementation keeps the original EEGNet folder's temporal convolution, depthwise spatial convolution, average pooling/dropout, depthwise temporal convolution, pointwise convolution, and fully connected classifier, while adapting input shape, channel count, window length, and class count dynamically. EEG-Conformer and EEGNet do not perform target-domain adaptation; target-domain data is never used in training or normalization refitting.
+Use `--model eegconformer` for the EEG-Conformer baseline. The implementation keeps the original model idea, convolutional patch embedding followed by Transformer encoder and fully connected classifier, but makes channel count, window length, and class count dynamic for STEW, EEGMAT, and COG-BCI. Use `--model eegnet` for the local EEGNet baseline. The project implementation keeps the original EEGNet folder's temporal convolution, depthwise spatial convolution, average pooling/dropout, depthwise temporal convolution, pointwise convolution, and fully connected classifier, while adapting input shape, channel count, window length, and class count dynamically. Use `--model svm` for a classical SVM baseline over flattened, source-normalized 1 s EEG windows. EEG-Conformer, EEGNet, and SVM do not perform target-domain adaptation; target-domain data is never used in training or normalization refitting.
 
 Use `--model bfgcn` for the local BF-GCN baseline. The adapter follows the original BF-GCN input design by converting each 1 s window into 5-band log-power node features and 4-band PLV adjacency matrices, then training the graph branches with a gradient-reversal domain classifier. Source train windows provide class labels; unlabeled target/test windows contribute only to the domain-adversarial loss when `target_adapt=True`. This is separate from TSMNet's SPDDSBN target BN refit. Use `--no-target-adapt` to disable BF-GCN target-domain use for an ablation.
 
@@ -93,8 +93,8 @@ If `--cache` is omitted, the scripts automatically create a cache name under `ou
 
 ## Output Files
 
-- `summary.csv`: one raw row per evaluated subject/fold. It keeps split sizes after optional artifact rejection, `epochs_ran`, `best_epoch`, `best_val_loss`, and window-level train/validation/test metrics.
+- `summary.csv`: one raw row per evaluated subject. It keeps split sizes after optional artifact rejection, `epochs_ran`, `best_epoch`, `best_val_loss`, and window-level train/validation/test metrics.
 - `subject_##/history.csv`: epoch-level training history with `is_best_epoch=True` on the selected best validation epoch.
-- `subject_##/model.pt`: the model state restored from the best validation epoch, then evaluated and saved.
+- `subject_##/model.pt`: the neural model state restored from the best validation epoch, then evaluated and saved. SVM runs save `subject_##/model.joblib`.
 - `aggregate_summary.csv`: protocol-level window-level summary with columns `dataset, model, protocol, n, accuracy, balanced_accuracy, f1, auc`. Metrics are formatted as `mean +/- std` with four decimals, for example `0.7539 +/- 0.0956`.
 - `outputs/master_summary.csv`: project-level append-only table. Each completed run appends one row with dataset, model, protocol, output directory, cache path, settings, and numeric mean/std metrics.

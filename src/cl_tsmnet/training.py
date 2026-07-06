@@ -6,8 +6,9 @@ import warnings
 import numpy as np
 import torch
 from scipy import signal
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, roc_auc_score
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, log_loss, roc_auc_score
 from sklearn.exceptions import UndefinedMetricWarning
+from sklearn.svm import SVC
 from torch.utils.data import DataLoader, Dataset
 
 
@@ -363,6 +364,26 @@ def evaluate_bfgcn(model, loader, device, return_predictions=False):
     return metrics
 
 
+def _svm_features(x, indices, normalizer):
+    idx = np.asarray(indices, dtype=np.int64)
+    values = normalizer.transform_array(np.asarray(x[idx], dtype=np.float32))
+    return values.reshape(values.shape[0], -1)
+
+
+def _evaluate_svm(model, x, y, indices, normalizer, labels):
+    idx = np.asarray(indices, dtype=np.int64)
+    features = _svm_features(x, idx, normalizer)
+    y_true = np.asarray(y[idx], dtype=np.int64)
+    y_pred = model.predict(features)
+    y_prob = model.predict_proba(features)
+    metrics = _metrics_from_arrays(y_true, y_pred, y_prob)
+    try:
+        metrics["loss"] = float(log_loss(y_true, y_prob, labels=labels))
+    except ValueError:
+        metrics["loss"] = np.nan
+    return metrics
+
+
 def _cycle_loader(loader):
     while True:
         for batch in loader:
@@ -409,7 +430,9 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     eegnet_avgpool_factor=2, bfgcn_kadj=2,
                     bfgcn_num_out=16, bfgcn_att_hidden=16,
                     bfgcn_classifier_hidden=32, bfgcn_avgpool=2,
-                    bfgcn_dropout=0.0, bfgcn_domain_weight=1.0):
+                    bfgcn_dropout=0.0, bfgcn_domain_weight=1.0,
+                    svm_kernel="rbf", svm_c=1.0, svm_gamma="scale",
+                    svm_class_weight="balanced"):
     torch.manual_seed(int(seed))
     np.random.seed(int(seed))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -426,6 +449,51 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
             len(split["train"]), len(split["val"]), len(split["test"])))
     selected = np.concatenate([split["train"], split["val"], split["test"]])
     nclasses = int(len(np.unique(y[selected])))
+    class_labels = np.arange(nclasses, dtype=np.int64)
+    if model_type == "svm":
+        target_adapt = False
+        class_weight = None if str(svm_class_weight).lower() in ["none", "null", ""] else svm_class_weight
+        gamma = svm_gamma
+        if str(gamma).lower() not in ["scale", "auto"]:
+            gamma = float(gamma)
+        train_features = _svm_features(x, split["train"], normalizer)
+        train_labels = np.asarray(y[split["train"]], dtype=np.int64)
+        model = SVC(
+            C=float(svm_c),
+            kernel=str(svm_kernel),
+            gamma=gamma,
+            class_weight=class_weight,
+            probability=True,
+            random_state=int(seed),
+        )
+        model.fit(train_features, train_labels)
+        train_metrics = _evaluate_svm(model, x, y, split["train"], normalizer, class_labels)
+        val_metrics = _evaluate_svm(model, x, y, split["val"], normalizer, class_labels)
+        test_metrics = _evaluate_svm(model, x, y, split["test"], normalizer, class_labels)
+        if output_dir:
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            import joblib
+            joblib.dump(model, os.path.join(output_dir, "model.joblib"))
+        return {
+            "history": [{
+                "epoch": 1,
+                "train_loss": train_metrics["loss"],
+                "val_loss": val_metrics["loss"],
+                "val_bacc": val_metrics["balanced_accuracy"],
+            }],
+            "train": train_metrics,
+            "val": val_metrics,
+            "test": test_metrics,
+            "epochs_ran": 1,
+            "best_epoch": 1,
+            "best_val_loss": float(val_metrics["loss"]),
+            "target_adapt": False,
+            "n_train": int(len(split["train"])),
+            "n_val": int(len(split["val"])),
+            "n_test": int(len(split["test"])),
+            "artifact_z": "" if artifact_z is None else float(artifact_z),
+        }
     if model_type == "tsmnet":
         model = build_tsmnet(project_root, x.shape[1], x.shape[2], nclasses,
                              domains[selected], bnorm=bnorm,
@@ -436,7 +504,11 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                              device=device)
     elif model_type == "eegconformer":
         model = build_eegconformer(x.shape[1], x.shape[2], nclasses,
-                                   temporal_kernel=temp_kernel).to(device)
+                                   temporal_kernel=temp_kernel,
+                                   emb_size=conformer_emb_size,
+                                   depth=conformer_depth,
+                                   num_heads=conformer_num_heads,
+                                   dropout=conformer_dropout).to(device)
         target_adapt = False
     elif model_type == "eegnet":
         model = build_eegnet(x.shape[1], x.shape[2], nclasses,

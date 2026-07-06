@@ -12,7 +12,7 @@ from src.cl_tsmnet.experiment_utils import (
     default_target_fs,
     run_directory_name,
 )
-from src.cl_tsmnet.splits import domain_ids, iter_eval_subjects, make_splits
+from src.cl_tsmnet.splits import domain_ids, iter_eval_subjects, make_split
 from src.cl_tsmnet.training import train_one_split
 
 
@@ -25,6 +25,8 @@ def _model_label(args):
         return "eegnet"
     if args.model == "bfgcn":
         return "bfgcn"
+    if args.model == "svm":
+        return "svm"
     if args.bnorm == "spddsbn":
         return "tsmnet_spddsbn"
     if args.bnorm == "spdbn":
@@ -68,7 +70,7 @@ def parse_args():
     parser.add_argument("--cog-paradigm", choices=["nback", "matb"], default="nback")
     parser.add_argument("--protocol", choices=["single_session", "cog_multi_session", "loso"],
                         required=True)
-    parser.add_argument("--model", choices=["tsmnet", "eegconformer", "eegnet", "bfgcn"],
+    parser.add_argument("--model", choices=["tsmnet", "eegconformer", "eegnet", "bfgcn", "svm"],
                         default="tsmnet")
     parser.add_argument("--subject", type=int, default=None,
                         help="Evaluate one subject only. Default: run all subjects.")
@@ -81,6 +83,8 @@ def parse_args():
                         help="Target sampling rate. Default: STEW=128 Hz, EEGMAT/COG-BCI=250 Hz.")
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--patience", type=int, default=8,
+                        help="Early-stopping patience measured in epochs.")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
@@ -107,17 +111,20 @@ def parse_args():
     parser.add_argument("--bfgcn-avgpool", type=int, default=2)
     parser.add_argument("--bfgcn-dropout", type=float, default=0.0)
     parser.add_argument("--bfgcn-domain-weight", type=float, default=1.0)
+    parser.add_argument("--svm-kernel", default="rbf",
+                        choices=["linear", "poly", "rbf", "sigmoid"])
+    parser.add_argument("--svm-c", type=float, default=1.0)
+    parser.add_argument("--svm-gamma", default="scale")
+    parser.add_argument("--svm-class-weight", default="balanced",
+                        help="SVM class_weight; use 'none' to disable.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-size", type=float, default=0.2,
                         help="Validation fraction for LOSO source subjects and COG fallback splits.")
     parser.add_argument("--single-val-size", type=float, default=0.125,
                         help="Validation fraction inside the single_session train+val block. "
                              "Default 0.125 gives train/val/test = 0.7/0.1/0.2.")
-    parser.add_argument("--single-folds", type=int, default=5,
-                        help="Number of contiguous outer folds for single_session CV. "
-                             "Default 5 gives 20% target/test windows per fold.")
     parser.add_argument("--test-size", type=float, default=0.2,
-                        help="Legacy single_session holdout fraction; 5-fold CV uses --single-folds.")
+                        help="Target/test fraction for single_session sequential time-block split.")
     parser.add_argument("--no-augment", action="store_true",
                         help="Disable light train-time augmentation for STEW/EEGMAT.")
     parser.add_argument("--no-target-adapt", action="store_true",
@@ -183,101 +190,87 @@ def main():
     project_root = os.path.abspath(os.path.dirname(__file__))
     for subject in subjects:
         split_val_size = args.single_val_size if args.protocol == "single_session" else args.val_size
-        splits = make_splits(dataset, args.protocol, subject, seed=args.seed,
-                             val_size=split_val_size, test_size=args.test_size,
-                             single_folds=args.single_folds)
-        for split in splits:
-            fold = int(split.get("fold", 1))
-            fold_dir = os.path.join(
-                out_root,
-                "subject_{:02d}".format(int(subject)),
-                "fold_{:02d}".format(fold),
-            )
-            res = train_one_split(
-                dataset=dataset,
-                domains=domains,
-                split=split,
-                project_root=project_root,
-                output_dir=fold_dir,
-                epochs=args.epochs,
-                patience=args.patience,
-                batch_size=args.batch_size,
-                lr=args.lr,
-                weight_decay=args.weight_decay,
-                bnorm=args.bnorm,
-                augment=augment,
-                model_type=args.model,
-                temporal_filters=args.temporal_filters,
-                spatial_filters=args.spatial_filters,
-                subspacedims=args.subspacedims,
-                temp_kernel=args.temp_kernel,
-                conformer_emb_size=args.conformer_emb_size,
-                conformer_depth=args.conformer_depth,
-                conformer_num_heads=args.conformer_num_heads,
-                conformer_dropout=args.conformer_dropout,
-                conformer_classifier_hidden=args.conformer_classifier_hidden,
-                seed=args.seed + int(subject) * 100 + fold,
-                target_adapt=target_adapt,
-                artifact_z=artifact_z,
-                eegnet_temporal_filters=args.eegnet_temporal_filters,
-                eegnet_spatial_filters=args.eegnet_spatial_filters,
-                eegnet_dropout=args.eegnet_dropout,
-                eegnet_avgpool_factor=args.eegnet_avgpool_factor,
-                bfgcn_kadj=args.bfgcn_kadj,
-                bfgcn_num_out=args.bfgcn_num_out,
-                bfgcn_att_hidden=args.bfgcn_att_hidden,
-                bfgcn_classifier_hidden=args.bfgcn_classifier_hidden,
-                bfgcn_avgpool=args.bfgcn_avgpool,
-                bfgcn_dropout=args.bfgcn_dropout,
-                bfgcn_domain_weight=args.bfgcn_domain_weight,
-                mdtn_hidden_dim=args.mdtn_hidden_dim,
-                mdtn_k_length=args.mdtn_k_length,
-                mdtn_graph_k=args.mdtn_graph_k,
-                mdtn_num_heads=args.mdtn_num_heads,
-                mdtn_dropout=args.mdtn_dropout,
-                mdtn_lambda_match=args.mdtn_lambda_match,
-                mdtn_alpha=args.mdtn_alpha,
-                mdtn_beta=args.mdtn_beta,
-                mdtn_l1_weight=args.mdtn_l1_weight,
-                mdtn_max_iter=args.mdtn_max_iter,
-            )
-            row = {
-                "dataset": dataset["name"],
-                "model": model_name,
-                "protocol": args.protocol,
-                "subject": int(subject),
-                "fold": fold if args.protocol == "single_session" else "",
-                "model_type": args.model,
-                "bnorm": args.bnorm if args.model == "tsmnet" else "",
-                "epochs_ran": res["epochs_ran"],
-                "best_epoch": res["best_epoch"],
-                "best_val_loss": res["best_val_loss"],
-                "target_adapt": res["target_adapt"],
-                "artifact_z": res["artifact_z"],
-                "train_bacc": res["train"]["balanced_accuracy"],
-                "val_bacc": res["val"]["balanced_accuracy"],
-                "test_bacc": res["test"]["balanced_accuracy"],
-                "train_acc": res["train"]["accuracy"],
-                "val_acc": res["val"]["accuracy"],
-                "test_acc": res["test"]["accuracy"],
-                "train_f1": res["train"]["f1"],
-                "val_f1": res["val"]["f1"],
-                "test_f1": res["test"]["f1"],
-                "train_auc": res["train"]["auc"],
-                "val_auc": res["val"]["auc"],
-                "test_auc": res["test"]["auc"],
-                "n_train": res["n_train"],
-                "n_val": res["n_val"],
-                "n_test": res["n_test"],
-                "val_size": split_val_size,
-                "test_size": (1.0 / args.single_folds) if args.protocol == "single_session" else "",
-            }
-            results.append(row)
-            history = pd.DataFrame(res["history"])
-            if len(history):
-                history["is_best_epoch"] = history["epoch"] == res["best_epoch"]
-            history.to_csv(os.path.join(fold_dir, "history.csv"), index=False)
-            print(row)
+        split = make_split(dataset, args.protocol, subject, seed=args.seed,
+                           val_size=split_val_size, test_size=args.test_size)
+        subject_dir = os.path.join(out_root, "subject_{:02d}".format(int(subject)))
+        res = train_one_split(
+            dataset=dataset,
+            domains=domains,
+            split=split,
+            project_root=project_root,
+            output_dir=subject_dir,
+            epochs=args.epochs,
+            patience=args.patience,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            bnorm=args.bnorm,
+            augment=augment,
+            model_type=args.model,
+            temporal_filters=args.temporal_filters,
+            spatial_filters=args.spatial_filters,
+            subspacedims=args.subspacedims,
+            temp_kernel=args.temp_kernel,
+            conformer_emb_size=args.conformer_emb_size,
+            conformer_depth=args.conformer_depth,
+            conformer_num_heads=args.conformer_num_heads,
+            conformer_dropout=args.conformer_dropout,
+            conformer_classifier_hidden=args.conformer_classifier_hidden,
+            seed=args.seed + int(subject),
+            target_adapt=target_adapt,
+            artifact_z=artifact_z,
+            eegnet_temporal_filters=args.eegnet_temporal_filters,
+            eegnet_spatial_filters=args.eegnet_spatial_filters,
+            eegnet_dropout=args.eegnet_dropout,
+            eegnet_avgpool_factor=args.eegnet_avgpool_factor,
+            bfgcn_kadj=args.bfgcn_kadj,
+            bfgcn_num_out=args.bfgcn_num_out,
+            bfgcn_att_hidden=args.bfgcn_att_hidden,
+            bfgcn_classifier_hidden=args.bfgcn_classifier_hidden,
+            bfgcn_avgpool=args.bfgcn_avgpool,
+            bfgcn_dropout=args.bfgcn_dropout,
+            bfgcn_domain_weight=args.bfgcn_domain_weight,
+            svm_kernel=args.svm_kernel,
+            svm_c=args.svm_c,
+            svm_gamma=args.svm_gamma,
+            svm_class_weight=args.svm_class_weight,
+        )
+        row = {
+            "dataset": dataset["name"],
+            "model": model_name,
+            "protocol": args.protocol,
+            "subject": int(subject),
+            "model_type": args.model,
+            "bnorm": args.bnorm if args.model == "tsmnet" else "",
+            "epochs_ran": res["epochs_ran"],
+            "best_epoch": res["best_epoch"],
+            "best_val_loss": res["best_val_loss"],
+            "target_adapt": res["target_adapt"],
+            "artifact_z": res["artifact_z"],
+            "train_bacc": res["train"]["balanced_accuracy"],
+            "val_bacc": res["val"]["balanced_accuracy"],
+            "test_bacc": res["test"]["balanced_accuracy"],
+            "train_acc": res["train"]["accuracy"],
+            "val_acc": res["val"]["accuracy"],
+            "test_acc": res["test"]["accuracy"],
+            "train_f1": res["train"]["f1"],
+            "val_f1": res["val"]["f1"],
+            "test_f1": res["test"]["f1"],
+            "train_auc": res["train"]["auc"],
+            "val_auc": res["val"]["auc"],
+            "test_auc": res["test"]["auc"],
+            "n_train": res["n_train"],
+            "n_val": res["n_val"],
+            "n_test": res["n_test"],
+            "val_size": split_val_size,
+            "test_size": args.test_size if args.protocol == "single_session" else "",
+        }
+        results.append(row)
+        history = pd.DataFrame(res["history"])
+        if len(history):
+            history["is_best_epoch"] = history["epoch"] == res["best_epoch"]
+        history.to_csv(os.path.join(subject_dir, "history.csv"), index=False)
+        print(row)
 
     result_path = os.path.join(out_root, "summary.csv")
     with open(result_path, "w", newline="") as f:
@@ -295,6 +288,7 @@ def main():
             "cache": cache,
             "output_dir": out_root,
             "epochs": args.epochs,
+            "patience": args.patience,
             "batch_size": args.batch_size,
             "lr": args.lr,
             "weight_decay": args.weight_decay,
@@ -313,10 +307,13 @@ def main():
             "bfgcn_avgpool": args.bfgcn_avgpool if args.model == "bfgcn" else "",
             "bfgcn_dropout": args.bfgcn_dropout if args.model == "bfgcn" else "",
             "bfgcn_domain_weight": args.bfgcn_domain_weight if args.model == "bfgcn" else "",
+            "svm_kernel": args.svm_kernel if args.model == "svm" else "",
+            "svm_c": args.svm_c if args.model == "svm" else "",
+            "svm_gamma": args.svm_gamma if args.model == "svm" else "",
+            "svm_class_weight": args.svm_class_weight if args.model == "svm" else "",
             "val_size": args.val_size,
             "single_val_size": args.single_val_size,
-            "single_folds": args.single_folds,
-            "test_size": (1.0 / args.single_folds) if args.protocol == "single_session" else args.test_size,
+            "test_size": args.test_size,
         })
         print("Updated:", args.master_summary)
 

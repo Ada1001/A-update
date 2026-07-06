@@ -1,6 +1,6 @@
-# TSMNet, EEG-Conformer, EEGNet, and BF-GCN Experiment Commands
+# TSMNet, EEG-Conformer, EEGNet, BF-GCN, and SVM Experiment Commands
 
-This file lists the full commands for running TSMNet, EEG-Conformer, EEGNet, and BF-GCN experiments on STEW, EEGMAT, and COG-BCI.
+This file lists the full commands for running TSMNet, EEG-Conformer, EEGNet, BF-GCN, and SVM experiments on STEW, EEGMAT, and COG-BCI.
 
 Before formal training, rebuild strict caches once and inspect the split to confirm sampling rate, subject scope, train/validation/test counts, and subject-disjoint validation where applicable. Older caches with record-level standardization are rejected by the loader.
 
@@ -162,12 +162,28 @@ For a no-target-feature ablation, append:
 --no-target-adapt
 ```
 
+## SVM Baseline
+
+SVM has no cross-domain adaptation in this project. It uses the same source-fitted robust normalization as the neural models, flattens each 1 s EEG window, and trains `SVC(probability=True)` with RBF kernel and balanced class weights by default.
+
+Use `--model svm` with any dataset/protocol command above. Examples:
+
+```powershell
+python run_experiment.py --model svm --dataset stew --protocol single_session --epochs 1 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model svm --dataset eegmat --protocol loso --target-fs 250 --epochs 1 --batch-size 64
+```
+
+Useful tunable parameters are `--svm-kernel`, `--svm-c`, `--svm-gamma`, and `--svm-class-weight`. `--epochs` is accepted for command compatibility but SVM training runs once.
+
 ## Batch Runs
 
 Run multiple datasets, protocols, models, and COG-BCI paradigms in one command:
 
 ```powershell
-python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models tsmnet,eegconformer,eegnet,bfgcn --epochs 30 --batch-size 64
+python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models tsmnet,eegconformer,eegnet,bfgcn,svm --epochs 30 --batch-size 64
 ```
 
 Preview commands without running:
@@ -178,7 +194,7 @@ python run_batch_experiments.py --datasets stew,eegmat --protocols single_sessio
 
 ## Baseline Defaults
 
-Baseline defaults are aligned with the local reference implementations where explicit examples are available: EEG-Conformer uses the 1 s Conformer setting family (`emb_size=40`, `depth=6`, `num_heads=5`), EEGNet follows `EEGNet/trainEEGNet.py` (`64/4/2`), and BF-GCN follows `BF-GCN/Simple_Demo.py` (`kadj=2`, `num_out=16`, `att_hidden=16`, `classifier_hidden=32`, `avgpool=2`). MDTN-GMDA exposes its transfer-loss and graph parameters because the local code does not provide one universal dataset-optimal setting. For formal reporting, keep the default run and optionally add a small validation-only sweep or sensitivity analysis; do not tune on target/test labels.
+Baseline defaults are aligned with the local reference implementations where explicit examples are available: EEG-Conformer uses the 1 s Conformer setting family (`emb_size=40`, `depth=6`, `num_heads=5`), EEGNet follows `EEGNet/trainEEGNet.py` (`64/4/2`), and BF-GCN follows `BF-GCN/Simple_Demo.py` (`kadj=2`, `num_out=16`, `att_hidden=16`, `classifier_hidden=32`, `avgpool=2`). SVM uses a standard RBF kernel with `C=1.0`, `gamma=scale`, and balanced class weights. For formal reporting, keep the default run and optionally add a small validation-only sweep or sensitivity analysis; do not tune on target/test labels.
 
 STEW:
 
@@ -234,10 +250,10 @@ python run_experiment.py --model eegconformer --dataset cog-bci --cog-paradigm m
 - If `--cache` is omitted, cache names are generated automatically by dataset, paradigm, protocol, subject scope, sessions, and sampling rate.
 - Cache construction does not use full-recording standardization. Robust normalization is fitted from source-domain training windows inside each split, then applied to validation and target/test windows.
 - Artifact-window rejection is off by default for the formal protocol so the target/test set remains fixed. Use `--artifact-z <value>` only for an explicitly reported ablation.
-- `single_session` uses 5-fold contiguous time-block cross-validation within each task record. Each fold uses one contiguous block per task as target/test and the remaining four blocks as source; with `--single-val-size 0.125`, each fold is approximately train/validation/test = 70%/10%/20%.
+- `single_session` uses the original contiguous sequential split within each task record: the last 20% is target/test, and the preceding source block is split into training/validation with `--single-val-size 0.125`, giving approximately train/validation/test = 70%/10%/20%.
 - `cog_multi_session` uses COG-BCI S1/S2/S3 as train/validation/test; `loso` randomly selects `ceil(20% * source_subjects)` source subjects for validation and uses the remaining source subjects for training.
 - `aggregate_summary.csv` reports window-level test metrics, which are the primary metrics for this project.
 - `outputs/master_summary.csv` is append-only. Every completed run adds one row with model, dataset, protocol, settings, cache/output path, and numeric metric mean/std.
 - Full-dataset COG-BCI caches can take time to build because each subject zip is decompressed and read from EEGLAB `.set/.fdt` files.
 - Outputs are saved under `outputs/<dataset>_<protocol>_<model-or-bnorm>/` by default.
-- `summary.csv` stores per-subject/fold raw window-level train/validation/test results. For `single_session`, the aggregate `n` is normally `number_of_subjects * --single-folds`.
+- `summary.csv` stores per-subject raw window-level train/validation/test results.

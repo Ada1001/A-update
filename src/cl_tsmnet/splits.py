@@ -43,45 +43,6 @@ def _record_block_split(indices, meta, test_size, val_size):
     return concat(train_parts), concat(val_parts), concat(test_parts)
 
 
-def _record_block_cv_splits(indices, meta, y, n_splits, val_size, seed):
-    """Contiguous per-record outer folds with source-only validation split."""
-    indices = np.asarray(indices, dtype=np.int64)
-    n_splits = int(n_splits)
-    if n_splits < 2:
-        train, val, test = _record_block_split(indices, meta, 0.2, val_size)
-        return [{"train": train, "val": val, "test": test, "fold": 1}]
-
-    frame = meta.iloc[indices].copy()
-    frame["_idx"] = indices
-    group_cols = ["subject", "session", "paradigm", "task"]
-    grouped_blocks = []
-    for key, group in frame.groupby(group_cols, sort=True):
-        ordered = group.sort_values("start_sample")["_idx"].values.astype(np.int64)
-        if len(ordered) < n_splits:
-            raise ValueError(
-                "single_session {}-fold CV needs at least {} windows per record; "
-                "record {} has {}".format(n_splits, n_splits, key, len(ordered))
-            )
-        grouped_blocks.append(np.array_split(ordered, n_splits))
-
-    splits = []
-    for fold in range(n_splits):
-        test_parts, source_parts = [], []
-        for blocks in grouped_blocks:
-            test_parts.append(blocks[fold])
-            source_parts.extend(blocks[i] for i in range(n_splits) if i != fold)
-        test = np.concatenate(test_parts).astype(np.int64)
-        source = np.concatenate(source_parts).astype(np.int64)
-        train, val = _stratified_split(source, y, val_size, seed + fold + 1)
-        splits.append({
-            "train": train.astype(np.int64),
-            "val": val.astype(np.int64),
-            "test": test.astype(np.int64),
-            "fold": int(fold + 1),
-        })
-    return splits
-
-
 def _subject_holdout_validation_split(source, meta, val_size, seed):
     source = np.asarray(source, dtype=np.int64)
     subjects = np.unique(meta.iloc[source]["subject"].values.astype(np.int64))
@@ -111,7 +72,7 @@ def iter_eval_subjects(meta, protocol, dataset_name):
 
 
 def make_split(dataset, protocol, eval_subject, seed=42, val_size=0.2,
-               test_size=0.2, fold=None, single_folds=5):
+               test_size=0.2):
     meta = dataset["meta"]
     y = dataset["y"]
     subject = meta["subject"].values.astype(np.int64)
@@ -121,15 +82,7 @@ def make_split(dataset, protocol, eval_subject, seed=42, val_size=0.2,
     if protocol == "single_session":
         sess = 1
         selected = np.flatnonzero((subject == int(eval_subject)) & (session == sess))
-        folds = _record_block_cv_splits(selected, meta, y, single_folds, val_size, seed)
-        if fold is None:
-            split = folds[0]
-        else:
-            fold_idx = int(fold) - 1
-            if fold_idx < 0 or fold_idx >= len(folds):
-                raise ValueError("fold must be in [1, {}]".format(len(folds)))
-            split = folds[fold_idx]
-        train, val, test = split["train"], split["val"], split["test"]
+        train, val, test = _record_block_split(selected, meta, test_size, val_size)
     elif protocol == "cog_multi_session":
         if not name.startswith("cog-bci"):
             raise ValueError("cog_multi_session is only defined for COG-BCI")
@@ -150,21 +103,11 @@ def make_split(dataset, protocol, eval_subject, seed=42, val_size=0.2,
     if len(train) == 0 or len(val) == 0 or len(test) == 0:
         raise RuntimeError("Invalid split: train={}, val={}, test={}".format(
             len(train), len(val), len(test)))
-    out = {"train": train, "val": val, "test": test}
-    if protocol == "single_session":
-        out["fold"] = int(split.get("fold", fold or 1))
-    return out
+    return {"train": train, "val": val, "test": test}
 
 
 def make_splits(dataset, protocol, eval_subject, seed=42, val_size=0.2,
-                test_size=0.2, single_folds=5):
-    if protocol == "single_session":
-        meta = dataset["meta"]
-        y = dataset["y"]
-        subject = meta["subject"].values.astype(np.int64)
-        session = meta["session"].values.astype(np.int64)
-        selected = np.flatnonzero((subject == int(eval_subject)) & (session == 1))
-        return _record_block_cv_splits(selected, meta, y, single_folds, val_size, seed)
+                test_size=0.2):
     return [make_split(dataset, protocol, eval_subject, seed=seed,
                        val_size=val_size, test_size=test_size)]
 

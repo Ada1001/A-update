@@ -8,7 +8,7 @@ from src.cl_tsmnet.datasets import (
     load_dataset,
 )
 from src.cl_tsmnet.experiment_utils import default_cache_path, default_target_fs
-from src.cl_tsmnet.splits import iter_eval_subjects, make_splits, split_summary
+from src.cl_tsmnet.splits import iter_eval_subjects, make_split, split_summary
 
 
 def main():
@@ -29,10 +29,8 @@ def main():
     parser.add_argument("--single-val-size", type=float, default=0.125,
                         help="Validation fraction inside the single_session train+val block. "
                              "Default 0.125 gives train/val/test = 0.7/0.1/0.2.")
-    parser.add_argument("--single-folds", type=int, default=5,
-                        help="Number of contiguous outer folds for single_session CV.")
     parser.add_argument("--test-size", type=float, default=0.2,
-                        help="Legacy single_session holdout fraction; 5-fold CV uses --single-folds.")
+                        help="Target/test fraction for single_session sequential time-block split.")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -81,15 +79,11 @@ def main():
         rows = []
         for subject in eval_subjects:
             split_val_size = args.single_val_size if args.protocol == "single_session" else args.val_size
-            splits = make_splits(ds, args.protocol, subject, seed=args.seed,
-                                 val_size=split_val_size, test_size=args.test_size,
-                                 single_folds=args.single_folds)
-            for split in splits:
-                row = split_summary(ds, split, subject)
-                row["fold"] = split.get("fold", "")
-                rows.append(row)
+            split = make_split(ds, args.protocol, subject, seed=args.seed,
+                               val_size=split_val_size, test_size=args.test_size)
+            rows.append(split_summary(ds, split, subject))
         table = pd.DataFrame(rows)
-        display_cols = ["subject", "fold", "n_source", "n_target", "n_train", "n_val", "n_test",
+        display_cols = ["subject", "n_source", "n_target", "n_train", "n_val", "n_test",
                         "train_subjects", "val_subjects", "test_subjects",
                         "train_pct_total", "val_pct_total", "test_pct_total",
                         "train_labels", "val_labels", "test_labels"]
@@ -100,19 +94,16 @@ def main():
         print(numeric.mean().round(2).to_string())
         if args.protocol == "single_session" and args.subject is not None:
             split_val_size = args.single_val_size
-            splits = make_splits(ds, args.protocol, args.subject, seed=args.seed,
-                                 val_size=split_val_size, test_size=args.test_size,
-                                 single_folds=args.single_folds)
+            split = make_split(ds, args.protocol, args.subject, seed=args.seed,
+                               val_size=split_val_size, test_size=args.test_size)
             print("\nsingle_session time-block ranges:")
-            for split in splits:
-                print("\nfold {}:".format(split.get("fold", "")))
-                for name in ["train", "val", "test"]:
-                    idx = split[name]
-                    ranges = meta.iloc[idx].groupby(
-                        ["subject", "session", "paradigm", "task"]
-                    )["start_sample"].agg(["min", "max", "count"])
-                    print("\n{}:".format(name))
-                    print(ranges.to_string())
+            for name in ["train", "val", "test"]:
+                idx = split[name]
+                ranges = meta.iloc[idx].groupby(
+                    ["subject", "session", "paradigm", "task"]
+                )["start_sample"].agg(["min", "max", "count"])
+                print("\n{}:".format(name))
+                print(ranges.to_string())
 
 
 if __name__ == "__main__":

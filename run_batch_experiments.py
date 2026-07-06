@@ -15,8 +15,8 @@ def parse_args():
                         help="Comma-separated: stew,eegmat,cog-bci")
     parser.add_argument("--protocols", default="single_session,loso",
                         help="Comma-separated: single_session,cog_multi_session,loso")
-    parser.add_argument("--models", default="tsmnet,eegconformer,eegnet,bfgcn",
-                        help="Comma-separated: tsmnet,eegconformer,eegnet,bfgcn")
+    parser.add_argument("--models", default="tsmnet,eegconformer,eegnet,bfgcn,svm",
+                        help="Comma-separated: tsmnet,eegconformer,eegnet,bfgcn,svm")
     parser.add_argument("--cog-paradigms", default="nback,matb",
                         help="Comma-separated COG-BCI paradigms.")
     parser.add_argument("--data-root", default="data")
@@ -26,13 +26,13 @@ def parse_args():
     parser.add_argument("--target-fs", default=None,
                         help="Optional sampling rate applied to all runs.")
     parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-size", type=float, default=0.2)
     parser.add_argument("--single-val-size", type=float, default=0.125)
-    parser.add_argument("--single-folds", type=int, default=5)
     parser.add_argument("--test-size", type=float, default=0.2)
     parser.add_argument("--bnorm", default="spddsbn", choices=["spddsbn", "spdbn", "none"])
     parser.add_argument("--conformer-emb-size", type=int, default=40)
@@ -51,6 +51,11 @@ def parse_args():
     parser.add_argument("--bfgcn-avgpool", type=int, default=2)
     parser.add_argument("--bfgcn-dropout", type=float, default=0.0)
     parser.add_argument("--bfgcn-domain-weight", type=float, default=1.0)
+    parser.add_argument("--svm-kernel", default="rbf",
+                        choices=["linear", "poly", "rbf", "sigmoid"])
+    parser.add_argument("--svm-c", type=float, default=1.0)
+    parser.add_argument("--svm-gamma", default="scale")
+    parser.add_argument("--svm-class-weight", default="balanced")
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--no-augment", action="store_true")
     parser.add_argument("--no-target-adapt", action="store_true")
@@ -83,13 +88,13 @@ def main():
                         "--cache-root", args.cache_root,
                         "--master-summary", args.master_summary,
                         "--epochs", str(args.epochs),
+                        "--patience", str(args.patience),
                         "--batch-size", str(args.batch_size),
                         "--lr", str(args.lr),
                         "--weight-decay", str(args.weight_decay),
                         "--seed", str(args.seed),
                         "--val-size", str(args.val_size),
                         "--single-val-size", str(args.single_val_size),
-                        "--single-folds", str(args.single_folds),
                         "--test-size", str(args.test_size),
                     ]
                     if args.target_fs is not None:
@@ -98,6 +103,14 @@ def main():
                         cmd.extend(["--cog-paradigm", paradigm])
                     if model == "tsmnet":
                         cmd.extend(["--bnorm", args.bnorm])
+                    if model == "eegconformer":
+                        cmd.extend([
+                            "--conformer-emb-size", str(args.conformer_emb_size),
+                            "--conformer-depth", str(args.conformer_depth),
+                            "--conformer-num-heads", str(args.conformer_num_heads),
+                            "--conformer-dropout", str(args.conformer_dropout),
+                            "--conformer-classifier-hidden", str(args.conformer_classifier_hidden),
+                        ])
                     if model == "eegnet":
                         cmd.extend([
                             "--eegnet-temporal-filters", str(args.eegnet_temporal_filters),
@@ -114,6 +127,13 @@ def main():
                             "--bfgcn-avgpool", str(args.bfgcn_avgpool),
                             "--bfgcn-dropout", str(args.bfgcn_dropout),
                             "--bfgcn-domain-weight", str(args.bfgcn_domain_weight),
+                        ])
+                    if model == "svm":
+                        cmd.extend([
+                            "--svm-kernel", str(args.svm_kernel),
+                            "--svm-c", str(args.svm_c),
+                            "--svm-gamma", str(args.svm_gamma),
+                            "--svm-class-weight", str(args.svm_class_weight),
                         ])
                     if args.rebuild_cache:
                         cmd.append("--rebuild-cache")
