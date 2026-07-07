@@ -12,7 +12,12 @@ from src.cl_tsmnet.experiment_utils import (
     default_target_fs,
     run_directory_name,
 )
-from src.cl_tsmnet.splits import domain_ids, iter_eval_subjects, make_split
+from src.cl_tsmnet.splits import (
+    domain_ids,
+    iter_eval_subjects,
+    make_split,
+    split_validation_issues,
+)
 from src.cl_tsmnet.training import train_one_split
 
 
@@ -27,6 +32,8 @@ def _model_label(args):
         return "bfgcn"
     if args.model == "tahag":
         return "tahag"
+    if args.model == "mdtn":
+        return "mdtn_gmda"
     if args.model == "svm":
         return "svm"
     if args.model == "lsccn":
@@ -78,7 +85,7 @@ def parse_args():
                         required=True)
     parser.add_argument("--model", choices=[
         "tsmnet", "eegconformer", "eegnet", "bfgcn", "tahag", "svm",
-        "lsccn", "lstm", "bilstm", "transformer", "shallowcnn",
+        "mdtn", "lsccn", "lstm", "bilstm", "transformer", "shallowcnn",
     ],
                         default="tsmnet")
     parser.add_argument("--subject", type=int, default=None,
@@ -125,6 +132,17 @@ def parse_args():
     parser.add_argument("--tahag-mmd-weight", type=float, default=1.0)
     parser.add_argument("--no-tahag-adaptive", action="store_true")
     parser.add_argument("--no-tahag-attention", action="store_true")
+    parser.add_argument("--mdtn-hidden-dim", type=int, default=64)
+    parser.add_argument("--mdtn-num-nodes", type=int, default=0,
+                        help="Cheby discriminator graph nodes. 0 means use EEG channel count.")
+    parser.add_argument("--mdtn-kernel-length", type=int, default=16)
+    parser.add_argument("--mdtn-num-heads", type=int, default=4)
+    parser.add_argument("--mdtn-cheby-order", type=int, default=3)
+    parser.add_argument("--mdtn-dropout", type=float, default=0.5)
+    parser.add_argument("--mdtn-lambda-match", type=float, default=0.1)
+    parser.add_argument("--mdtn-marginal-weight", type=float, default=0.01)
+    parser.add_argument("--mdtn-conditional-weight", type=float, default=0.01)
+    parser.add_argument("--mdtn-l1-weight", type=float, default=0.01)
     parser.add_argument("--svm-estimator", default="linear-svc",
                         choices=["linear-svc", "svc"],
                         help="linear-svc is the fast default; svc enables kernel SVM.")
@@ -162,10 +180,16 @@ def parse_args():
                              "Default 0.125 gives train/val/test = 0.7/0.1/0.2.")
     parser.add_argument("--test-size", type=float, default=0.2,
                         help="Target/test fraction for single_session sequential time-block split.")
+    parser.add_argument("--min-split-windows", type=int, default=2,
+                        help="Minimum split windows required for cog_multi_session quality checks.")
+    parser.add_argument("--min-class-windows", type=int, default=2,
+                        help="Minimum per-class windows required for cog_multi_session quality checks.")
+    parser.add_argument("--allow-incomplete-splits", action="store_true",
+                        help="Do not skip incomplete cog_multi_session subjects.")
     parser.add_argument("--no-augment", action="store_true",
                         help="Disable light train-time augmentation for STEW/EEGMAT.")
     parser.add_argument("--no-target-adapt", action="store_true",
-                        help="Disable unlabeled target-domain BN refit for SPDDSBN.")
+                        help="Disable unlabeled target-domain adaptation for TSMNet, BF-GCN, TAHAG, and MDTN-GMDA.")
     parser.add_argument("--artifact-z", type=float, default=None,
                         help="Reject windows whose source-normalized absolute amplitude exceeds this value.")
     parser.add_argument("--no-artifact-reject", action="store_true",
@@ -214,7 +238,7 @@ def main():
     subjects = [args.subject] if args.subject is not None else iter_eval_subjects(
         dataset["meta"], args.protocol, dataset["name"])
     augment = (args.dataset in ["stew", "eegmat"]) and (not args.no_augment)
-    target_adapt = (not args.no_target_adapt) and args.model in ["tsmnet", "bfgcn", "tahag"]
+    target_adapt = (not args.no_target_adapt) and args.model in ["tsmnet", "bfgcn", "tahag", "mdtn"]
     artifact_z = None if args.no_artifact_reject else args.artifact_z
 
     run_name = run_directory_name(dataset["name"], args.protocol, args.model, args.bnorm)
@@ -229,6 +253,20 @@ def main():
         split_val_size = args.single_val_size if args.protocol == "single_session" else args.val_size
         split = make_split(dataset, args.protocol, subject, seed=args.seed,
                            val_size=split_val_size, test_size=args.test_size)
+        split_issues = []
+        if args.protocol == "cog_multi_session":
+            split_issues = split_validation_issues(
+                dataset,
+                split,
+                min_windows=args.min_split_windows,
+                min_class_windows=args.min_class_windows,
+                require_all_classes=True,
+            )
+            if split_issues and not args.allow_incomplete_splits:
+                print("Skipping subject {} due to incomplete cog_multi_session split: {}".format(
+                    int(subject), "; ".join(split_issues)
+                ))
+                continue
         subject_dir = os.path.join(out_root, "subject_{:02d}".format(int(subject)))
         res = train_one_split(
             dataset=dataset,
@@ -283,6 +321,16 @@ def main():
             lsccn_routing_iters=args.lsccn_routing_iters,
             lsccn_recon_weight=args.lsccn_recon_weight,
             lsccn_kl_weight=args.lsccn_kl_weight,
+            mdtn_hidden_dim=args.mdtn_hidden_dim,
+            mdtn_num_nodes=args.mdtn_num_nodes,
+            mdtn_kernel_length=args.mdtn_kernel_length,
+            mdtn_num_heads=args.mdtn_num_heads,
+            mdtn_cheby_order=args.mdtn_cheby_order,
+            mdtn_dropout=args.mdtn_dropout,
+            mdtn_lambda_match=args.mdtn_lambda_match,
+            mdtn_marginal_weight=args.mdtn_marginal_weight,
+            mdtn_conditional_weight=args.mdtn_conditional_weight,
+            mdtn_l1_weight=args.mdtn_l1_weight,
             recurrent_hidden=args.recurrent_hidden,
             recurrent_layers=args.recurrent_layers,
             recurrent_dropout=args.recurrent_dropout,
@@ -326,6 +374,7 @@ def main():
             "n_test": res["n_test"],
             "val_size": split_val_size,
             "test_size": args.test_size if args.protocol == "single_session" else "",
+            "split_issues": "; ".join(split_issues),
         }
         results.append(row)
         history = pd.DataFrame(res["history"])
@@ -335,6 +384,8 @@ def main():
         print(row)
 
     result_path = os.path.join(out_root, "summary.csv")
+    if not results:
+        raise RuntimeError("No valid subjects were evaluated. Check split quality settings.")
     with open(result_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=sorted(results[0].keys()))
         writer.writeheader()
@@ -374,6 +425,16 @@ def main():
             "tahag_mmd_weight": args.tahag_mmd_weight if args.model == "tahag" else "",
             "tahag_adaptive": (not args.no_tahag_adaptive) if args.model == "tahag" else "",
             "tahag_attention": (not args.no_tahag_attention) if args.model == "tahag" else "",
+            "mdtn_hidden_dim": args.mdtn_hidden_dim if args.model == "mdtn" else "",
+            "mdtn_num_nodes": args.mdtn_num_nodes if args.model == "mdtn" else "",
+            "mdtn_kernel_length": args.mdtn_kernel_length if args.model == "mdtn" else "",
+            "mdtn_num_heads": args.mdtn_num_heads if args.model == "mdtn" else "",
+            "mdtn_cheby_order": args.mdtn_cheby_order if args.model == "mdtn" else "",
+            "mdtn_dropout": args.mdtn_dropout if args.model == "mdtn" else "",
+            "mdtn_lambda_match": args.mdtn_lambda_match if args.model == "mdtn" else "",
+            "mdtn_marginal_weight": args.mdtn_marginal_weight if args.model == "mdtn" else "",
+            "mdtn_conditional_weight": args.mdtn_conditional_weight if args.model == "mdtn" else "",
+            "mdtn_l1_weight": args.mdtn_l1_weight if args.model == "mdtn" else "",
             "svm_estimator": args.svm_estimator if args.model == "svm" else "",
             "svm_kernel": args.svm_kernel if args.model == "svm" else "",
             "svm_c": args.svm_c if args.model == "svm" else "",
@@ -400,6 +461,9 @@ def main():
             "val_size": args.val_size,
             "single_val_size": args.single_val_size,
             "test_size": args.test_size,
+            "min_split_windows": args.min_split_windows,
+            "min_class_windows": args.min_class_windows,
+            "allow_incomplete_splits": args.allow_incomplete_splits,
         })
         print("Updated:", args.master_summary)
 

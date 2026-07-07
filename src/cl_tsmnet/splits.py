@@ -117,6 +117,34 @@ def split_label_counts(y, indices):
     return {int(label): int(count) for label, count in zip(labels, counts)}
 
 
+def split_validation_issues(dataset, split, min_windows=2, min_class_windows=2,
+                            require_all_classes=True):
+    y = dataset["y"]
+    all_labels = sorted(int(label) for label in np.unique(y))
+    issues = []
+    for name in ["train", "val", "test"]:
+        indices = np.asarray(split[name], dtype=np.int64)
+        if len(indices) < int(min_windows):
+            issues.append("{} has {} windows < {}".format(
+                name, len(indices), int(min_windows)
+            ))
+        counts = split_label_counts(y, indices)
+        if require_all_classes:
+            missing = [label for label in all_labels if counts.get(label, 0) == 0]
+            if missing:
+                issues.append("{} missing labels {}".format(name, missing))
+        low = {
+            label: counts.get(label, 0)
+            for label in all_labels
+            if counts.get(label, 0) < int(min_class_windows)
+        }
+        if low:
+            issues.append("{} label counts below {}: {}".format(
+                name, int(min_class_windows), low
+            ))
+    return issues
+
+
 def split_summary(dataset, split, eval_subject):
     y = dataset["y"]
     meta = dataset["meta"]

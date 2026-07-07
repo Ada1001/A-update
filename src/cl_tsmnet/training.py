@@ -265,6 +265,26 @@ def build_lsccn(nchannels, nfeatures, nclasses, latent_dim=200,
     )
 
 
+def build_mdtn_gmda(nchannels, nclasses, hidden_dim=64, num_nodes=None,
+                    kernel_length=16, num_heads=4, cheby_order=3,
+                    dropout=0.5, max_iter=1000):
+    from .mdtn_gmda import MDTNGMDAModel
+
+    if num_nodes is None or int(num_nodes) <= 0:
+        num_nodes = int(nchannels)
+    return MDTNGMDAModel(
+        in_channels=int(nchannels),
+        hidden_dim=int(hidden_dim),
+        num_classes=int(nclasses),
+        num_nodes=int(num_nodes),
+        kernel_length=int(kernel_length),
+        num_heads=int(num_heads),
+        cheby_order=int(cheby_order),
+        dropout=float(dropout),
+        max_iter=int(max_iter),
+    )
+
+
 def build_temporal_baseline(model_type, nchannels, nsamples, nclasses,
                             recurrent_hidden=64, recurrent_layers=1,
                             recurrent_dropout=0.5,
@@ -733,6 +753,11 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     tahag_adaptive=True, tahag_attention=True,
                     lsccn_latent_dim=200, lsccn_routing_iters=3,
                     lsccn_recon_weight=1e-5, lsccn_kl_weight=0.1,
+                    mdtn_hidden_dim=64, mdtn_num_nodes=0,
+                    mdtn_kernel_length=16, mdtn_num_heads=4,
+                    mdtn_cheby_order=3, mdtn_dropout=0.5,
+                    mdtn_lambda_match=0.1, mdtn_marginal_weight=0.01,
+                    mdtn_conditional_weight=0.01, mdtn_l1_weight=0.01,
                     recurrent_hidden=64, recurrent_layers=1,
                     recurrent_dropout=0.5,
                     transformer_d_model=64, transformer_heads=4,
@@ -858,6 +883,17 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
             routing_iters=lsccn_routing_iters,
         ).to(device)
         target_adapt = False
+    elif model_type == "mdtn":
+        model = build_mdtn_gmda(
+            x.shape[1], nclasses,
+            hidden_dim=mdtn_hidden_dim,
+            num_nodes=mdtn_num_nodes,
+            kernel_length=mdtn_kernel_length,
+            num_heads=mdtn_num_heads,
+            cheby_order=mdtn_cheby_order,
+            dropout=mdtn_dropout,
+            max_iter=max(1, int(epochs) * 1000),
+        ).to(device)
     elif model_type in ["lstm", "bilstm", "transformer", "shallowcnn"]:
         model = build_temporal_baseline(
             model_type,
@@ -881,6 +917,16 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
     optimizer = make_optimizer(model, lr=lr, weight_decay=weight_decay,
                                model_type=model_type)
     loss_fn = torch.nn.CrossEntropyLoss()
+    mdtn_loss_fn = None
+    if model_type == "mdtn":
+        from .mdtn_gmda import MDTNGMDALoss
+
+        mdtn_loss_fn = MDTNGMDALoss(
+            lambda_match=mdtn_lambda_match,
+            alpha=mdtn_marginal_weight,
+            beta=mdtn_conditional_weight,
+            l1_weight=mdtn_l1_weight,
+        )
 
     train_ds = EEGWindowDataset(x, y, domains, split["train"], augment=augment,
                                 normalizer=normalizer)
@@ -936,6 +982,29 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         test_loader = DataLoader(
             test_ds, batch_size=batch_size, shuffle=False, collate_fn=collate
         )
+    elif model_type == "mdtn":
+        target_domain_ds = EEGWindowDataset(
+            x, y, domains, split["test"], augment=False, normalizer=normalizer
+        )
+        if target_adapt:
+            domain_batch_size = int(min(int(batch_size), len(train_ds), len(target_domain_ds)))
+        else:
+            domain_batch_size = int(min(int(batch_size), len(train_ds)))
+        domain_batch_size = max(1, domain_batch_size)
+        drop_source = bool(target_adapt and len(train_ds) > domain_batch_size)
+        train_loader = DataLoader(
+            train_ds, batch_size=domain_batch_size, shuffle=True,
+            drop_last=drop_source,
+        )
+        if target_adapt:
+            drop_target = bool(len(target_domain_ds) > domain_batch_size)
+            target_domain_loader = DataLoader(
+                target_domain_ds, batch_size=domain_batch_size, shuffle=True,
+                drop_last=drop_target,
+            )
+        train_eval_loader = DataLoader(train_eval_ds, batch_size=batch_size, shuffle=False)
+        val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+        test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
     elif model_type == "lsccn":
         collate = LSCCNCollator(dataset["fs"])
         train_loader = DataLoader(
@@ -960,7 +1029,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
     best_state, best_loss, best_epoch, bad_epochs = None, float("inf"), None, 0
     history = []
     target_iter = _cycle_loader(target_domain_loader) if (
-        model_type in ["bfgcn", "tahag"] and target_adapt
+        model_type in ["bfgcn", "tahag", "mdtn"] and target_adapt
     ) else None
     domain_loss_fn = torch.nn.NLLLoss()
     for epoch in range(1, int(epochs) + 1):
@@ -1007,6 +1076,23 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     loss = (class_loss
                             + float(tahag_domain_weight) * domain_loss
                             + float(tahag_mmd_weight) * alpha * mmd_loss)
+            elif model_type == "mdtn":
+                xb, yb, db = batch
+                xb = xb.to(device)
+                yb = yb.to(device)
+                if target_adapt:
+                    progress = (float(epoch - 1) + float(step) / max(1, len(train_loader))) / max(1, int(epochs))
+                    alpha = float(2.0 / (1.0 + np.exp(-10.0 * progress)) - 1.0)
+                    target_batch = next(target_iter)
+                    xt = target_batch[0].to(device)
+                    outputs = model(xb, xt, alpha=alpha)
+                    loss, _ = mdtn_loss_fn(
+                        outputs[0], outputs[1], outputs[2], outputs[3],
+                        outputs[4], yb, outputs[6],
+                    )
+                else:
+                    logits = model(xb)
+                    loss = loss_fn(logits, yb.to(logits.device))
             elif model_type == "lsccn":
                 outputs, xb, yb, _ = _lsccn_forward(model, batch, device)
                 loss = _lsccn_loss(

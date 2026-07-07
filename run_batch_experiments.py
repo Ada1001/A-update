@@ -15,7 +15,7 @@ def parse_args():
                         help="Comma-separated: stew,eegmat,cog-bci")
     parser.add_argument("--protocols", default="single_session,loso",
                         help="Comma-separated: single_session,cog_multi_session,loso")
-    parser.add_argument("--models", default="tsmnet,eegconformer,eegnet,bfgcn,tahag,svm,lsccn,lstm,bilstm,transformer,shallowcnn",
+    parser.add_argument("--models", default="tsmnet,eegconformer,eegnet,bfgcn,tahag,mdtn,svm,lsccn,lstm,bilstm,transformer,shallowcnn",
                         help="Comma-separated model names.")
     parser.add_argument("--cog-paradigms", default="nback,matb",
                         help="Comma-separated COG-BCI paradigms.")
@@ -34,6 +34,9 @@ def parse_args():
     parser.add_argument("--val-size", type=float, default=0.2)
     parser.add_argument("--single-val-size", type=float, default=0.125)
     parser.add_argument("--test-size", type=float, default=0.2)
+    parser.add_argument("--min-split-windows", type=int, default=2)
+    parser.add_argument("--min-class-windows", type=int, default=2)
+    parser.add_argument("--allow-incomplete-splits", action="store_true")
     parser.add_argument("--bnorm", default="spddsbn", choices=["spddsbn", "spdbn", "none"])
     parser.add_argument("--conformer-emb-size", type=int, default=40)
     parser.add_argument("--conformer-depth", type=int, default=6)
@@ -56,6 +59,16 @@ def parse_args():
     parser.add_argument("--tahag-mmd-weight", type=float, default=1.0)
     parser.add_argument("--no-tahag-adaptive", action="store_true")
     parser.add_argument("--no-tahag-attention", action="store_true")
+    parser.add_argument("--mdtn-hidden-dim", type=int, default=64)
+    parser.add_argument("--mdtn-num-nodes", type=int, default=0)
+    parser.add_argument("--mdtn-kernel-length", type=int, default=16)
+    parser.add_argument("--mdtn-num-heads", type=int, default=4)
+    parser.add_argument("--mdtn-cheby-order", type=int, default=3)
+    parser.add_argument("--mdtn-dropout", type=float, default=0.5)
+    parser.add_argument("--mdtn-lambda-match", type=float, default=0.1)
+    parser.add_argument("--mdtn-marginal-weight", type=float, default=0.01)
+    parser.add_argument("--mdtn-conditional-weight", type=float, default=0.01)
+    parser.add_argument("--mdtn-l1-weight", type=float, default=0.01)
     parser.add_argument("--svm-estimator", default="linear-svc",
                         choices=["linear-svc", "svc"])
     parser.add_argument("--svm-kernel", default="rbf",
@@ -121,7 +134,11 @@ def main():
                         "--val-size", str(args.val_size),
                         "--single-val-size", str(args.single_val_size),
                         "--test-size", str(args.test_size),
+                        "--min-split-windows", str(args.min_split_windows),
+                        "--min-class-windows", str(args.min_class_windows),
                     ]
+                    if args.allow_incomplete_splits:
+                        cmd.append("--allow-incomplete-splits")
                     if args.target_fs is not None:
                         cmd.extend(["--target-fs", str(args.target_fs)])
                     if dataset == "cog-bci":
@@ -163,6 +180,19 @@ def main():
                             cmd.append("--no-tahag-adaptive")
                         if args.no_tahag_attention:
                             cmd.append("--no-tahag-attention")
+                    if model == "mdtn":
+                        cmd.extend([
+                            "--mdtn-hidden-dim", str(args.mdtn_hidden_dim),
+                            "--mdtn-num-nodes", str(args.mdtn_num_nodes),
+                            "--mdtn-kernel-length", str(args.mdtn_kernel_length),
+                            "--mdtn-num-heads", str(args.mdtn_num_heads),
+                            "--mdtn-cheby-order", str(args.mdtn_cheby_order),
+                            "--mdtn-dropout", str(args.mdtn_dropout),
+                            "--mdtn-lambda-match", str(args.mdtn_lambda_match),
+                            "--mdtn-marginal-weight", str(args.mdtn_marginal_weight),
+                            "--mdtn-conditional-weight", str(args.mdtn_conditional_weight),
+                            "--mdtn-l1-weight", str(args.mdtn_l1_weight),
+                        ])
                     if model == "svm":
                         cmd.extend([
                             "--svm-estimator", str(args.svm_estimator),

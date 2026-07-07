@@ -8,7 +8,12 @@ from src.cl_tsmnet.datasets import (
     load_dataset,
 )
 from src.cl_tsmnet.experiment_utils import default_cache_path, default_target_fs
-from src.cl_tsmnet.splits import iter_eval_subjects, make_split, split_summary
+from src.cl_tsmnet.splits import (
+    iter_eval_subjects,
+    make_split,
+    split_summary,
+    split_validation_issues,
+)
 
 
 def main():
@@ -34,6 +39,8 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--min-split-windows", type=int, default=2,
                         help="Warn when any train/validation/test split has fewer windows than this.")
+    parser.add_argument("--min-class-windows", type=int, default=2,
+                        help="Warn when any class count in a split is below this value.")
     args = parser.parse_args()
 
     subjects = None
@@ -83,7 +90,14 @@ def main():
             split_val_size = args.single_val_size if args.protocol == "single_session" else args.val_size
             split = make_split(ds, args.protocol, subject, seed=args.seed,
                                val_size=split_val_size, test_size=args.test_size)
-            rows.append(split_summary(ds, split, subject))
+            row = split_summary(ds, split, subject)
+            row["split_issues"] = "; ".join(split_validation_issues(
+                ds, split,
+                min_windows=args.min_split_windows,
+                min_class_windows=args.min_class_windows,
+                require_all_classes=True,
+            ))
+            rows.append(row)
         table = pd.DataFrame(rows)
         display_cols = ["subject", "n_source", "n_target", "n_train", "n_val", "n_test",
                         "train_subjects", "val_subjects", "test_subjects",
@@ -102,6 +116,10 @@ def main():
         if len(small):
             print("\nWARNING: splits with very small window counts:")
             print(small[display_cols].to_string(index=False))
+        issue_rows = table[table["split_issues"].astype(str) != ""]
+        if len(issue_rows):
+            print("\nWARNING: split label/window quality issues:")
+            print(issue_rows[["subject", "split_issues"]].to_string(index=False))
         if args.dataset == "cog-bci" and args.protocol == "cog_multi_session":
             print("\nCOG-BCI per-subject/session/task window counts:")
             counts = (meta.groupby(["subject", "session", "task"])
