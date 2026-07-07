@@ -15,7 +15,7 @@ def parse_args():
                         help="Comma-separated: stew,eegmat,cog-bci")
     parser.add_argument("--protocols", default="single_session,loso",
                         help="Comma-separated: single_session,cog_multi_session,loso")
-    parser.add_argument("--models", default="tsmnet,eegconformer,eegnet,bfgcn,tahag,mdtn,svm,lsccn,lstm,bilstm,transformer,shallowcnn",
+    parser.add_argument("--models", default="tsmnet,eegconformer,eegnet,bfgcn,tahag,mdtn,ms_tgc_spddsbn,svm,lsccn,lstm,bilstm,transformer,shallowcnn",
                         help="Comma-separated model names.")
     parser.add_argument("--cog-paradigms", default="nback,matb",
                         help="Comma-separated COG-BCI paradigms.")
@@ -69,6 +69,14 @@ def parse_args():
     parser.add_argument("--mdtn-marginal-weight", type=float, default=0.01)
     parser.add_argument("--mdtn-conditional-weight", type=float, default=0.01)
     parser.add_argument("--mdtn-l1-weight", type=float, default=0.01)
+    parser.add_argument("--mstgc-temporal-hidden", type=int, default=64)
+    parser.add_argument("--mstgc-graph-hidden", type=int, default=64)
+    parser.add_argument("--mstgc-fusion-dim", type=int, default=128)
+    parser.add_argument("--mstgc-kernel-length", type=int, default=16)
+    parser.add_argument("--mstgc-num-heads", type=int, default=4)
+    parser.add_argument("--mstgc-cheby-order", type=int, default=3)
+    parser.add_argument("--mstgc-dropout", type=float, default=0.5)
+    parser.add_argument("--mstgc-num-nodes", type=int, default=0)
     parser.add_argument("--svm-estimator", default="linear-svc",
                         choices=["linear-svc", "svc"])
     parser.add_argument("--svm-kernel", default="rbf",
@@ -192,6 +200,17 @@ def main():
                             "--mdtn-marginal-weight", str(args.mdtn_marginal_weight),
                             "--mdtn-conditional-weight", str(args.mdtn_conditional_weight),
                             "--mdtn-l1-weight", str(args.mdtn_l1_weight),
+                        ])
+                    if model == "ms_tgc_spddsbn":
+                        cmd.extend([
+                            "--mstgc-temporal-hidden", str(args.mstgc_temporal_hidden),
+                            "--mstgc-graph-hidden", str(args.mstgc_graph_hidden),
+                            "--mstgc-fusion-dim", str(args.mstgc_fusion_dim),
+                            "--mstgc-kernel-length", str(args.mstgc_kernel_length),
+                            "--mstgc-num-heads", str(args.mstgc_num_heads),
+                            "--mstgc-cheby-order", str(args.mstgc_cheby_order),
+                            "--mstgc-dropout", str(args.mstgc_dropout),
+                            "--mstgc-num-nodes", str(args.mstgc_num_nodes),
                         ])
                     if model == "svm":
                         cmd.extend([

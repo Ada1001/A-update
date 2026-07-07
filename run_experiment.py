@@ -34,6 +34,8 @@ def _model_label(args):
         return "tahag"
     if args.model == "mdtn":
         return "mdtn_gmda"
+    if args.model == "ms_tgc_spddsbn":
+        return "ms_tgc_spddsbn"
     if args.model == "svm":
         return "svm"
     if args.model == "lsccn":
@@ -85,7 +87,8 @@ def parse_args():
                         required=True)
     parser.add_argument("--model", choices=[
         "tsmnet", "eegconformer", "eegnet", "bfgcn", "tahag", "svm",
-        "mdtn", "lsccn", "lstm", "bilstm", "transformer", "shallowcnn",
+        "mdtn", "ms_tgc_spddsbn", "lsccn", "lstm", "bilstm",
+        "transformer", "shallowcnn",
     ],
                         default="tsmnet")
     parser.add_argument("--subject", type=int, default=None,
@@ -143,6 +146,15 @@ def parse_args():
     parser.add_argument("--mdtn-marginal-weight", type=float, default=0.01)
     parser.add_argument("--mdtn-conditional-weight", type=float, default=0.01)
     parser.add_argument("--mdtn-l1-weight", type=float, default=0.01)
+    parser.add_argument("--mstgc-temporal-hidden", type=int, default=64)
+    parser.add_argument("--mstgc-graph-hidden", type=int, default=64)
+    parser.add_argument("--mstgc-fusion-dim", type=int, default=128)
+    parser.add_argument("--mstgc-kernel-length", type=int, default=16)
+    parser.add_argument("--mstgc-num-heads", type=int, default=4)
+    parser.add_argument("--mstgc-cheby-order", type=int, default=3)
+    parser.add_argument("--mstgc-dropout", type=float, default=0.5)
+    parser.add_argument("--mstgc-num-nodes", type=int, default=0,
+                        help="Cheby graph nodes for MS_TGC_SPDDSBN. 0 means use EEG channel count.")
     parser.add_argument("--svm-estimator", default="linear-svc",
                         choices=["linear-svc", "svc"],
                         help="linear-svc is the fast default; svc enables kernel SVM.")
@@ -189,7 +201,7 @@ def parse_args():
     parser.add_argument("--no-augment", action="store_true",
                         help="Disable light train-time augmentation for STEW/EEGMAT.")
     parser.add_argument("--no-target-adapt", action="store_true",
-                        help="Disable unlabeled target-domain adaptation for TSMNet, BF-GCN, TAHAG, and MDTN-GMDA.")
+                        help="Disable unlabeled target-domain adaptation for TSMNet, BF-GCN, TAHAG, MDTN-GMDA, and MS_TGC_SPDDSBN.")
     parser.add_argument("--artifact-z", type=float, default=None,
                         help="Reject windows whose source-normalized absolute amplitude exceeds this value.")
     parser.add_argument("--no-artifact-reject", action="store_true",
@@ -238,7 +250,9 @@ def main():
     subjects = [args.subject] if args.subject is not None else iter_eval_subjects(
         dataset["meta"], args.protocol, dataset["name"])
     augment = (args.dataset in ["stew", "eegmat"]) and (not args.no_augment)
-    target_adapt = (not args.no_target_adapt) and args.model in ["tsmnet", "bfgcn", "tahag", "mdtn"]
+    target_adapt = (not args.no_target_adapt) and args.model in [
+        "tsmnet", "bfgcn", "tahag", "mdtn", "ms_tgc_spddsbn"
+    ]
     artifact_z = None if args.no_artifact_reject else args.artifact_z
 
     run_name = run_directory_name(dataset["name"], args.protocol, args.model, args.bnorm)
@@ -331,6 +345,14 @@ def main():
             mdtn_marginal_weight=args.mdtn_marginal_weight,
             mdtn_conditional_weight=args.mdtn_conditional_weight,
             mdtn_l1_weight=args.mdtn_l1_weight,
+            mstgc_temporal_hidden=args.mstgc_temporal_hidden,
+            mstgc_graph_hidden=args.mstgc_graph_hidden,
+            mstgc_fusion_dim=args.mstgc_fusion_dim,
+            mstgc_kernel_length=args.mstgc_kernel_length,
+            mstgc_num_heads=args.mstgc_num_heads,
+            mstgc_cheby_order=args.mstgc_cheby_order,
+            mstgc_dropout=args.mstgc_dropout,
+            mstgc_num_nodes=args.mstgc_num_nodes,
             recurrent_hidden=args.recurrent_hidden,
             recurrent_layers=args.recurrent_layers,
             recurrent_dropout=args.recurrent_dropout,
@@ -435,6 +457,14 @@ def main():
             "mdtn_marginal_weight": args.mdtn_marginal_weight if args.model == "mdtn" else "",
             "mdtn_conditional_weight": args.mdtn_conditional_weight if args.model == "mdtn" else "",
             "mdtn_l1_weight": args.mdtn_l1_weight if args.model == "mdtn" else "",
+            "mstgc_temporal_hidden": args.mstgc_temporal_hidden if args.model == "ms_tgc_spddsbn" else "",
+            "mstgc_graph_hidden": args.mstgc_graph_hidden if args.model == "ms_tgc_spddsbn" else "",
+            "mstgc_fusion_dim": args.mstgc_fusion_dim if args.model == "ms_tgc_spddsbn" else "",
+            "mstgc_kernel_length": args.mstgc_kernel_length if args.model == "ms_tgc_spddsbn" else "",
+            "mstgc_num_heads": args.mstgc_num_heads if args.model == "ms_tgc_spddsbn" else "",
+            "mstgc_cheby_order": args.mstgc_cheby_order if args.model == "ms_tgc_spddsbn" else "",
+            "mstgc_dropout": args.mstgc_dropout if args.model == "ms_tgc_spddsbn" else "",
+            "mstgc_num_nodes": args.mstgc_num_nodes if args.model == "ms_tgc_spddsbn" else "",
             "svm_estimator": args.svm_estimator if args.model == "svm" else "",
             "svm_kernel": args.svm_kernel if args.model == "svm" else "",
             "svm_c": args.svm_c if args.model == "svm" else "",

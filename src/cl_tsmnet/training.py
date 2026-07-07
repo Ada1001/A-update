@@ -181,6 +181,44 @@ def build_tsmnet(project_root, nchannels, nsamples, nclasses, domains,
     return model
 
 
+def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
+                         temporal_filters=4, spatial_filters=40,
+                         subspacedims=20, temp_kernel=25, device=None,
+                         temporal_hidden=64, graph_hidden=64,
+                         fusion_dim=128, kernel_length=16, num_heads=4,
+                         cheby_order=3, dropout=0.5, num_nodes=0):
+    from .ms_tgc_spddsbn import MSTGCSPDDSBN
+
+    spd_branch = build_tsmnet(
+        project_root,
+        nchannels,
+        nsamples,
+        nclasses,
+        domains,
+        bnorm="spddsbn",
+        temporal_filters=temporal_filters,
+        spatial_filters=spatial_filters,
+        subspacedims=subspacedims,
+        temp_kernel=temp_kernel,
+        device=device,
+    )
+    spd_dim = int(subspacedims) * (int(subspacedims) + 1) // 2
+    return MSTGCSPDDSBN(
+        spd_branch=spd_branch,
+        spd_latent_dim=spd_dim,
+        nchannels=nchannels,
+        nclasses=nclasses,
+        temporal_hidden=temporal_hidden,
+        graph_hidden=graph_hidden,
+        fusion_dim=fusion_dim,
+        kernel_length=kernel_length,
+        num_heads=num_heads,
+        cheby_order=cheby_order,
+        dropout=dropout,
+        num_nodes=num_nodes,
+    )
+
+
 def build_eegconformer(nchannels, nsamples, nclasses, temporal_kernel=25,
                        emb_size=40, depth=6, num_heads=5, dropout=0.5,
                        classifier_hidden=256):
@@ -329,7 +367,7 @@ def build_temporal_baseline(model_type, nchannels, nsamples, nclasses,
 
 
 def make_optimizer(model, lr=1e-3, weight_decay=1e-4, model_type="tsmnet"):
-    if model_type != "tsmnet":
+    if model_type not in ["tsmnet", "ms_tgc_spddsbn"]:
         return torch.optim.Adam(model.parameters(), lr=float(lr),
                                 weight_decay=float(weight_decay))
     try:
@@ -758,6 +796,10 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     mdtn_cheby_order=3, mdtn_dropout=0.5,
                     mdtn_lambda_match=0.1, mdtn_marginal_weight=0.01,
                     mdtn_conditional_weight=0.01, mdtn_l1_weight=0.01,
+                    mstgc_temporal_hidden=64, mstgc_graph_hidden=64,
+                    mstgc_fusion_dim=128, mstgc_kernel_length=16,
+                    mstgc_num_heads=4, mstgc_cheby_order=3,
+                    mstgc_dropout=0.5, mstgc_num_nodes=0,
                     recurrent_hidden=64, recurrent_layers=1,
                     recurrent_dropout=0.5,
                     transformer_d_model=64, transformer_heads=4,
@@ -845,6 +887,23 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                              subspacedims=subspacedims,
                              temp_kernel=temp_kernel,
                              device=device)
+    elif model_type == "ms_tgc_spddsbn":
+        model = build_ms_tgc_spddsbn(
+            project_root, x.shape[1], x.shape[2], nclasses, domains[selected],
+            temporal_filters=temporal_filters,
+            spatial_filters=spatial_filters,
+            subspacedims=subspacedims,
+            temp_kernel=temp_kernel,
+            device=device,
+            temporal_hidden=mstgc_temporal_hidden,
+            graph_hidden=mstgc_graph_hidden,
+            fusion_dim=mstgc_fusion_dim,
+            kernel_length=mstgc_kernel_length,
+            num_heads=mstgc_num_heads,
+            cheby_order=mstgc_cheby_order,
+            dropout=mstgc_dropout,
+            num_nodes=mstgc_num_nodes,
+        ).to(device)
     elif model_type == "eegconformer":
         model = build_eegconformer(x.shape[1], x.shape[2], nclasses,
                                    temporal_kernel=temp_kernel,
@@ -1139,7 +1198,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    if model_type == "tsmnet":
+    if model_type in ["tsmnet", "ms_tgc_spddsbn"]:
         refit_batchnorm(model, x, y, domains, split["train"], split["test"], device,
                         target_adapt=target_adapt, normalizer=normalizer)
     decision_threshold = ""

@@ -1,6 +1,6 @@
-# TSMNet, EEG-Conformer, EEGNet, BF-GCN, TAHAG, MDTN-GMDA, SVM, LSCCN, and Temporal Baseline Commands
+# TSMNet, EEG-Conformer, EEGNet, BF-GCN, TAHAG, MDTN-GMDA, MS_TGC_SPDDSBN, SVM, LSCCN, and Temporal Baseline Commands
 
-This file lists the full commands for running TSMNet, EEG-Conformer, EEGNet, BF-GCN, TAHAG, MDTN-GMDA, SVM, LSCCN, LSTM, BiLSTM, Transformer, and ShallowCNN experiments on STEW, EEGMAT, and COG-BCI.
+This file lists the full commands for running TSMNet, EEG-Conformer, EEGNet, BF-GCN, TAHAG, MDTN-GMDA, MS_TGC_SPDDSBN, SVM, LSCCN, LSTM, BiLSTM, Transformer, and ShallowCNN experiments on STEW, EEGMAT, and COG-BCI.
 
 Before formal training, rebuild strict caches once and inspect the split to confirm sampling rate, subject scope, train/validation/test counts, and subject-disjoint validation where applicable. Older caches with record-level standardization are rejected by the loader.
 
@@ -210,6 +210,32 @@ For a source-only ablation, append:
 
 Useful tunable parameters are `--mdtn-hidden-dim`, `--mdtn-num-nodes`, `--mdtn-kernel-length`, `--mdtn-num-heads`, `--mdtn-cheby-order`, `--mdtn-dropout`, `--mdtn-lambda-match`, `--mdtn-marginal-weight`, `--mdtn-conditional-weight`, and `--mdtn-l1-weight`.
 
+## MS_TGC_SPDDSBN Fusion Model
+
+MS_TGC_SPDDSBN combines the TSMNet-SPDDSBN SPD manifold branch with MDTN-style multi-scale temporal features and a Chebyshev graph-convolution feature encoder. The fusion is latent-level: the SPDDSBN log-Eig latent and graph-temporal latent are projected to a shared dimension and combined with a learnable gate before classification. It intentionally does not use MDTN-GMDA's domain-adversarial, MMD, or graph-matching losses. Training uses source-domain cross entropy only; target/test windows are used without labels only during the TSMNet-SPDDSBN statistics refit.
+
+Use `--model ms_tgc_spddsbn` with any dataset/protocol command above. Examples:
+
+```powershell
+python run_experiment.py --model ms_tgc_spddsbn --dataset stew --protocol loso --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model ms_tgc_spddsbn --dataset eegmat --protocol single_session --target-fs 250 --epochs 30 --batch-size 64
+```
+
+```powershell
+python run_experiment.py --model ms_tgc_spddsbn --dataset cog-bci --cog-paradigm nback --protocol cog_multi_session --target-fs 250 --epochs 30 --batch-size 64
+```
+
+For a source-only ablation with no target-domain SPDDSBN refit, append:
+
+```powershell
+--no-target-adapt
+```
+
+Useful tunable parameters are `--mstgc-temporal-hidden`, `--mstgc-graph-hidden`, `--mstgc-fusion-dim`, `--mstgc-kernel-length`, `--mstgc-num-heads`, `--mstgc-cheby-order`, `--mstgc-dropout`, and `--mstgc-num-nodes`.
+
 ## SVM Baseline
 
 SVM has no cross-domain adaptation in this project. It uses the same source-fitted robust normalization as the neural models and flattens each 1 s EEG window. The default is fast `LinearSVC` with balanced class weights; AUC is computed from the decision function. Kernel SVM is available for ablation with `--svm-estimator svc`.
@@ -278,7 +304,7 @@ Useful LSTM/BiLSTM parameters are `--recurrent-hidden`, `--recurrent-layers`, an
 - `loso` holds out one target subject and selects validation from source subjects only.
 - Cache construction performs filtering/resampling/windowing only. Robust normalization is fitted inside each split from source training windows only.
 - Train metrics are evaluated on non-augmented training windows; validation and test are also non-augmented.
-- EEG-Conformer, EEGNet, BF-GCN, TAHAG, MDTN-GMDA, SVM, LSCCN, LSTM, BiLSTM, Transformer, and ShallowCNN hyperparameters in `run_experiment.py` and `run_batch_experiments.py` are passed to the corresponding training code.
+- EEG-Conformer, EEGNet, BF-GCN, TAHAG, MDTN-GMDA, MS_TGC_SPDDSBN, SVM, LSCCN, LSTM, BiLSTM, Transformer, and ShallowCNN hyperparameters in `run_experiment.py` and `run_batch_experiments.py` are passed to the corresponding training code.
 - Keep `data/`, `outputs/`, `__pycache__/`, and `*.pyc` out of the source release.
 
 ## Batch Runs
@@ -286,7 +312,7 @@ Useful LSTM/BiLSTM parameters are `--recurrent-hidden`, `--recurrent-layers`, an
 Run multiple datasets, protocols, models, and COG-BCI paradigms in one command:
 
 ```powershell
-python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models tsmnet,eegconformer,eegnet,bfgcn,tahag,mdtn,svm,lsccn,lstm,bilstm,transformer,shallowcnn --epochs 30 --batch-size 64
+python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models tsmnet,eegconformer,eegnet,bfgcn,tahag,mdtn,ms_tgc_spddsbn,svm,lsccn,lstm,bilstm,transformer,shallowcnn --epochs 30 --batch-size 64
 ```
 
 Preview commands without running:
@@ -297,7 +323,7 @@ python run_batch_experiments.py --datasets stew,eegmat --protocols single_sessio
 
 ## Baseline Defaults
 
-Baseline defaults are aligned with the local reference implementations where explicit examples are available: EEG-Conformer uses the 1 s Conformer setting family (`emb_size=40`, `depth=6`, `num_heads=5`), EEGNet follows `EEGNet/trainEEGNet.py` (`64/4/2`), and BF-GCN follows `BF-GCN/Simple_Demo.py` (`kadj=2`, `num_out=16`, `att_hidden=16`, `classifier_hidden=32`, `avgpool=2`). TAHAG follows the independent-transfer setting: adaptive graph learning, attention, source classification, GRL domain loss, and MMD loss. MDTN-GMDA follows the local `MDTN-GMDA/Net.py` components with hidden size 64, 4 attention heads, Cheby order 3, graph matching weight 0.1, and marginal/conditional MMD weights 0.01. SVM defaults to `LinearSVC` because flattened EEG windows are high-dimensional and LOSO repeatedly trains on thousands of windows; RBF `SVC` remains available as an explicitly reported slow ablation. LSCCN follows the local paper's 200-dimensional latent space and 3 dynamic-routing iterations, with PLV plus band-power feature fusion. LSTM/BiLSTM use hidden size 64, Transformer uses `d_model=64` with 4 heads and 2 layers, and ShallowCNN uses 40 temporal-spatial filters. For formal reporting, keep the default run and optionally add a small validation-only sweep or sensitivity analysis; do not tune on target/test labels.
+Baseline defaults are aligned with the local reference implementations where explicit examples are available: EEG-Conformer uses the 1 s Conformer setting family (`emb_size=40`, `depth=6`, `num_heads=5`), EEGNet follows `EEGNet/trainEEGNet.py` (`64/4/2`), and BF-GCN follows `BF-GCN/Simple_Demo.py` (`kadj=2`, `num_out=16`, `att_hidden=16`, `classifier_hidden=32`, `avgpool=2`). TAHAG follows the independent-transfer setting: adaptive graph learning, attention, source classification, GRL domain loss, and MMD loss. MDTN-GMDA follows the local `MDTN-GMDA/Net.py` components with hidden size 64, 4 attention heads, Cheby order 3, graph matching weight 0.1, and marginal/conditional MMD weights 0.01. MS_TGC_SPDDSBN uses the same TSMNet SPD branch defaults plus 64-dimensional temporal and graph features, 128-dimensional gated fusion, 4 attention heads, and Cheby order 3. SVM defaults to `LinearSVC` because flattened EEG windows are high-dimensional and LOSO repeatedly trains on thousands of windows; RBF `SVC` remains available as an explicitly reported slow ablation. LSCCN follows the local paper's 200-dimensional latent space and 3 dynamic-routing iterations, with PLV plus band-power feature fusion. LSTM/BiLSTM use hidden size 64, Transformer uses `d_model=64` with 4 heads and 2 layers, and ShallowCNN uses 40 temporal-spatial filters. For formal reporting, keep the default run and optionally add a small validation-only sweep or sensitivity analysis; do not tune on target/test labels.
 
 STEW:
 
