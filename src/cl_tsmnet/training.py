@@ -890,6 +890,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                               normalizer=normalizer)
     test_ds = EEGWindowDataset(x, y, domains, split["test"], augment=False,
                                normalizer=normalizer)
+    target_domain_loader = None
     if model_type in ["bfgcn", "tahag"]:
         if model_type == "bfgcn":
             collate = BFGCNCollator(dataset["fs"])
@@ -898,18 +899,34 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         target_domain_ds = EEGWindowDataset(
             x, y, domains, split["test"], augment=False, normalizer=normalizer
         )
-        domain_batch_size = int(min(int(batch_size), len(train_ds), len(target_domain_ds)))
-        domain_batch_size = max(1, domain_batch_size)
+        if len(train_ds) < 2:
+            raise RuntimeError(
+                "{} training needs at least two source windows because its "
+                "classifier uses BatchNorm1d; got {}".format(model_type, len(train_ds))
+            )
+        if target_adapt and len(target_domain_ds) < 2:
+            warnings.warn(
+                "{} target adaptation disabled for this split because the "
+                "target domain has fewer than two windows; BatchNorm1d cannot "
+                "train on a target batch of size {}.".format(model_type, len(target_domain_ds))
+            )
+            target_adapt = False
+        if target_adapt:
+            domain_batch_size = int(min(int(batch_size), len(train_ds), len(target_domain_ds)))
+        else:
+            domain_batch_size = int(min(int(batch_size), len(train_ds)))
+        domain_batch_size = max(2, domain_batch_size)
         drop_source = len(train_ds) > domain_batch_size
-        drop_target = len(target_domain_ds) > domain_batch_size
         train_loader = DataLoader(
             train_ds, batch_size=domain_batch_size, shuffle=True,
             drop_last=drop_source, collate_fn=collate,
         )
-        target_domain_loader = DataLoader(
-            target_domain_ds, batch_size=domain_batch_size, shuffle=True,
-            drop_last=drop_target, collate_fn=collate,
-        )
+        if target_adapt:
+            drop_target = len(target_domain_ds) > domain_batch_size
+            target_domain_loader = DataLoader(
+                target_domain_ds, batch_size=domain_batch_size, shuffle=True,
+                drop_last=drop_target, collate_fn=collate,
+            )
         train_eval_loader = DataLoader(
             train_eval_ds, batch_size=batch_size, shuffle=False, collate_fn=collate
         )
@@ -942,7 +959,9 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
 
     best_state, best_loss, best_epoch, bad_epochs = None, float("inf"), None, 0
     history = []
-    target_iter = _cycle_loader(target_domain_loader) if model_type in ["bfgcn", "tahag"] else None
+    target_iter = _cycle_loader(target_domain_loader) if (
+        model_type in ["bfgcn", "tahag"] and target_adapt
+    ) else None
     domain_loss_fn = torch.nn.NLLLoss()
     for epoch in range(1, int(epochs) + 1):
         model.train()

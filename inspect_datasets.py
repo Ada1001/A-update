@@ -32,6 +32,8 @@ def main():
     parser.add_argument("--test-size", type=float, default=0.2,
                         help="Target/test fraction for single_session sequential time-block split.")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--min-split-windows", type=int, default=2,
+                        help="Warn when any train/validation/test split has fewer windows than this.")
     args = parser.parse_args()
 
     subjects = None
@@ -92,6 +94,27 @@ def main():
         numeric = table[["n_source", "n_target", "n_train", "n_val", "n_test"]]
         print("\nsplit count mean:")
         print(numeric.mean().round(2).to_string())
+        small = table[
+            (table["n_train"] < int(args.min_split_windows)) |
+            (table["n_val"] < int(args.min_split_windows)) |
+            (table["n_test"] < int(args.min_split_windows))
+        ]
+        if len(small):
+            print("\nWARNING: splits with very small window counts:")
+            print(small[display_cols].to_string(index=False))
+        if args.dataset == "cog-bci" and args.protocol == "cog_multi_session":
+            print("\nCOG-BCI per-subject/session/task window counts:")
+            counts = (meta.groupby(["subject", "session", "task"])
+                      .size().rename("n_windows").reset_index())
+            print(counts.to_string(index=False))
+            session_counts = (meta.groupby(["subject", "session"])
+                              .size().rename("n_windows").reset_index())
+            small_sessions = session_counts[
+                session_counts["n_windows"] < int(args.min_split_windows)
+            ]
+            if len(small_sessions):
+                print("\nWARNING: subject/session blocks below --min-split-windows:")
+                print(small_sessions.to_string(index=False))
         if args.protocol == "single_session" and args.subject is not None:
             split_val_size = args.single_val_size
             split = make_split(ds, args.protocol, args.subject, seed=args.seed,
