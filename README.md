@@ -237,6 +237,25 @@ For a source-only ablation with no target-domain SPDDSBN refit, append:
 
 Useful tunable parameters are `--mstgc-temporal-hidden`, `--mstgc-graph-hidden`, `--mstgc-fusion-dim`, `--mstgc-kernel-length`, `--mstgc-num-heads`, `--mstgc-cheby-order`, `--mstgc-dropout`, and `--mstgc-num-nodes`.
 
+The ablation variants are implemented in the same model file and can be selected with `--model`:
+
+| Model name | Meaning |
+|---|---|
+| `mstgc_dta_ce` | DTA + CE, multi-scale temporal branch only |
+| `mstgc_dta_cheb_ce` | DTA + Cheb + CE |
+| `mstgc_dta_cheb_eudsbn` | DTA + Cheb + Euclidean DSBN |
+| `mstgc_dta_cheb_spdbn` | DTA + Cheb + SPDBN, SPD BN without domain-specific statistics |
+| `ms_tgc_spddsbn` | DTA + Cheb + SPDDSBN, full fusion model |
+| `mstgc_wo_dta` | Full model without DTA; channel summary features feed Cheb |
+| `mstgc_wo_cheb` | Full model without Cheb; DTA features are fused directly |
+| `mstgc_wo_spddsbn` | Full fusion backbone with the TSMNet SPD branch but no SPDDSBN alignment |
+
+Run all ablations on the three datasets:
+
+```powershell
+python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models mstgc_dta_ce,mstgc_dta_cheb_ce,mstgc_dta_cheb_eudsbn,mstgc_dta_cheb_spdbn,ms_tgc_spddsbn,mstgc_wo_dta,mstgc_wo_cheb,mstgc_wo_spddsbn --epochs 30 --batch-size 64
+```
+
 ## SVM Baseline
 
 SVM has no cross-domain adaptation in this project. It uses the same source-fitted robust normalization as the neural models and flattens each 1 s EEG window. The default is fast `LinearSVC` with balanced class weights; AUC is computed from the decision function. Kernel SVM is available for ablation with `--svm-estimator svc`.

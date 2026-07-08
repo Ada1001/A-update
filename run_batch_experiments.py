@@ -7,6 +7,18 @@ def _split_csv(value):
     return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
+MSTGC_ABLATION_MODELS = [
+    "mstgc_dta_ce",
+    "mstgc_dta_cheb_ce",
+    "mstgc_dta_cheb_eudsbn",
+    "mstgc_dta_cheb_spdbn",
+    "ms_tgc_spddsbn",
+    "mstgc_wo_dta",
+    "mstgc_wo_cheb",
+    "mstgc_wo_spddsbn",
+]
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Run multiple cognitive-load EEG experiments with automatic cache/output names."
@@ -201,7 +213,7 @@ def main():
                             "--mdtn-conditional-weight", str(args.mdtn_conditional_weight),
                             "--mdtn-l1-weight", str(args.mdtn_l1_weight),
                         ])
-                    if model == "ms_tgc_spddsbn":
+                    if model in MSTGC_ABLATION_MODELS:
                         cmd.extend([
                             "--mstgc-temporal-hidden", str(args.mstgc_temporal_hidden),
                             "--mstgc-graph-hidden", str(args.mstgc_graph_hidden),

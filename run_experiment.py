@@ -21,6 +21,24 @@ from src.cl_tsmnet.splits import (
 from src.cl_tsmnet.training import train_one_split
 
 
+MSTGC_ABLATION_MODELS = [
+    "mstgc_dta_ce",
+    "mstgc_dta_cheb_ce",
+    "mstgc_dta_cheb_eudsbn",
+    "mstgc_dta_cheb_spdbn",
+    "ms_tgc_spddsbn",
+    "mstgc_wo_dta",
+    "mstgc_wo_cheb",
+    "mstgc_wo_spddsbn",
+]
+MSTGC_TARGET_ADAPT_MODELS = [
+    "mstgc_dta_cheb_eudsbn",
+    "ms_tgc_spddsbn",
+    "mstgc_wo_dta",
+    "mstgc_wo_cheb",
+]
+
+
 def _model_label(args):
     if args.model_name:
         return args.model_name
@@ -34,8 +52,8 @@ def _model_label(args):
         return "tahag"
     if args.model == "mdtn":
         return "mdtn_gmda"
-    if args.model == "ms_tgc_spddsbn":
-        return "ms_tgc_spddsbn"
+    if args.model in MSTGC_ABLATION_MODELS:
+        return args.model
     if args.model == "svm":
         return "svm"
     if args.model == "lsccn":
@@ -87,8 +105,11 @@ def parse_args():
                         required=True)
     parser.add_argument("--model", choices=[
         "tsmnet", "eegconformer", "eegnet", "bfgcn", "tahag", "svm",
-        "mdtn", "ms_tgc_spddsbn", "lsccn", "lstm", "bilstm",
-        "transformer", "shallowcnn",
+        "mdtn", "ms_tgc_spddsbn", "mstgc_dta_ce",
+        "mstgc_dta_cheb_ce", "mstgc_dta_cheb_eudsbn",
+        "mstgc_dta_cheb_spdbn", "mstgc_wo_dta", "mstgc_wo_cheb",
+        "mstgc_wo_spddsbn", "lsccn", "lstm", "bilstm", "transformer",
+        "shallowcnn",
     ],
                         default="tsmnet")
     parser.add_argument("--subject", type=int, default=None,
@@ -250,9 +271,10 @@ def main():
     subjects = [args.subject] if args.subject is not None else iter_eval_subjects(
         dataset["meta"], args.protocol, dataset["name"])
     augment = (args.dataset in ["stew", "eegmat"]) and (not args.no_augment)
-    target_adapt = (not args.no_target_adapt) and args.model in [
-        "tsmnet", "bfgcn", "tahag", "mdtn", "ms_tgc_spddsbn"
-    ]
+    target_adapt = (not args.no_target_adapt) and (
+        args.model in ["tsmnet", "bfgcn", "tahag", "mdtn"]
+        or args.model in MSTGC_TARGET_ADAPT_MODELS
+    )
     artifact_z = None if args.no_artifact_reject else args.artifact_z
 
     run_name = run_directory_name(dataset["name"], args.protocol, args.model, args.bnorm)
@@ -465,14 +487,14 @@ def main():
             "mdtn_marginal_weight": args.mdtn_marginal_weight if args.model == "mdtn" else "",
             "mdtn_conditional_weight": args.mdtn_conditional_weight if args.model == "mdtn" else "",
             "mdtn_l1_weight": args.mdtn_l1_weight if args.model == "mdtn" else "",
-            "mstgc_temporal_hidden": args.mstgc_temporal_hidden if args.model == "ms_tgc_spddsbn" else "",
-            "mstgc_graph_hidden": args.mstgc_graph_hidden if args.model == "ms_tgc_spddsbn" else "",
-            "mstgc_fusion_dim": args.mstgc_fusion_dim if args.model == "ms_tgc_spddsbn" else "",
-            "mstgc_kernel_length": args.mstgc_kernel_length if args.model == "ms_tgc_spddsbn" else "",
-            "mstgc_num_heads": args.mstgc_num_heads if args.model == "ms_tgc_spddsbn" else "",
-            "mstgc_cheby_order": args.mstgc_cheby_order if args.model == "ms_tgc_spddsbn" else "",
-            "mstgc_dropout": args.mstgc_dropout if args.model == "ms_tgc_spddsbn" else "",
-            "mstgc_num_nodes": args.mstgc_num_nodes if args.model == "ms_tgc_spddsbn" else "",
+            "mstgc_temporal_hidden": args.mstgc_temporal_hidden if args.model in MSTGC_ABLATION_MODELS else "",
+            "mstgc_graph_hidden": args.mstgc_graph_hidden if args.model in MSTGC_ABLATION_MODELS else "",
+            "mstgc_fusion_dim": args.mstgc_fusion_dim if args.model in MSTGC_ABLATION_MODELS else "",
+            "mstgc_kernel_length": args.mstgc_kernel_length if args.model in MSTGC_ABLATION_MODELS else "",
+            "mstgc_num_heads": args.mstgc_num_heads if args.model in MSTGC_ABLATION_MODELS else "",
+            "mstgc_cheby_order": args.mstgc_cheby_order if args.model in MSTGC_ABLATION_MODELS else "",
+            "mstgc_dropout": args.mstgc_dropout if args.model in MSTGC_ABLATION_MODELS else "",
+            "mstgc_num_nodes": args.mstgc_num_nodes if args.model in MSTGC_ABLATION_MODELS else "",
             "svm_estimator": args.svm_estimator if args.model == "svm" else "",
             "svm_kernel": args.svm_kernel if args.model == "svm" else "",
             "svm_c": args.svm_c if args.model == "svm" else "",
