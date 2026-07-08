@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import tempfile
+import warnings
 import zipfile
 
 import numpy as np
@@ -61,6 +62,10 @@ def _pack_dataset(name, all_x, all_rows, channels, fs, label_names):
         "label_names": dict(label_names),
         "preprocess_standardized": False,
     }
+
+
+def _subject_list(values):
+    return sorted(int(v) for v in set(int(v) for v in values))
 
 
 def _subject_allowed(subject, subjects):
@@ -218,6 +223,7 @@ def load_cog_bci(data_root, paradigm="nback", sessions=(1, 2, 3),
 
     all_x, all_rows = [], []
     channels = None
+    recording_subjects = set()
     label_names = ({0: "0-back", 1: "1-back", 2: "2-back"}
                    if paradigm == "nback"
                    else {0: "MAT-B easy", 1: "MAT-B medium", 2: "MAT-B difficult"})
@@ -225,6 +231,7 @@ def load_cog_bci(data_root, paradigm="nback", sessions=(1, 2, 3),
     for subject, zip_path in _discover_cog_bci_zip_paths(data_root):
         if not _subject_allowed(subject, subjects):
             continue
+        subject_had_recording = False
         with zipfile.ZipFile(zip_path) as zf:
             archive_names = {name.replace("\\", "/"): name for name in zf.namelist()}
             for session in sessions:
@@ -232,6 +239,7 @@ def load_cog_bci(data_root, paradigm="nback", sessions=(1, 2, 3),
                     eeg_pair = _find_cog_eeg_pair(archive_names, session, task)
                     if eeg_pair is None:
                         continue
+                    subject_had_recording = True
                     tmpdir = tempfile.mkdtemp(prefix="cog_bci_")
                     try:
                         set_path = _extract_eeglab_pair(zf, eeg_pair[0], eeg_pair[1], tmpdir)
@@ -252,8 +260,14 @@ def load_cog_bci(data_root, paradigm="nback", sessions=(1, 2, 3),
                         _append(all_x, all_rows, x, rows)
                     finally:
                         shutil.rmtree(tmpdir, ignore_errors=True)
-    return _pack_dataset("cog-bci-{}".format(paradigm), all_x, all_rows,
-                         channels, target_fs, label_names)
+        if subject_had_recording:
+            recording_subjects.add(int(subject))
+    dataset = _pack_dataset("cog-bci-{}".format(paradigm), all_x, all_rows,
+                            channels, target_fs, label_names)
+    cached_subjects = set(int(s) for s in np.unique(dataset["meta"]["subject"].values))
+    dataset["recording_subjects"] = _subject_list(recording_subjects)
+    dataset["subjects_without_windows"] = _subject_list(recording_subjects - cached_subjects)
+    return dataset
 
 
 def save_npz(dataset, path):
@@ -275,6 +289,12 @@ def save_npz(dataset, path):
         name=np.asarray([dataset["name"]]).astype("U64"),
         preprocess_standardized=np.asarray(
             [bool(dataset.get("preprocess_standardized", False))], dtype=np.bool_
+        ),
+        recording_subjects=np.asarray(
+            dataset.get("recording_subjects", []), dtype=np.int64
+        ),
+        subjects_without_windows=np.asarray(
+            dataset.get("subjects_without_windows", []), dtype=np.int64
         ),
     )
 
@@ -304,6 +324,12 @@ def load_npz(path):
     preprocess_standardized = None
     if "preprocess_standardized" in data:
         preprocess_standardized = bool(data["preprocess_standardized"][0])
+    recording_subjects = []
+    if "recording_subjects" in data:
+        recording_subjects = _subject_list(data["recording_subjects"].astype(np.int64))
+    subjects_without_windows = []
+    if "subjects_without_windows" in data:
+        subjects_without_windows = _subject_list(data["subjects_without_windows"].astype(np.int64))
     return {
         "name": str(data["name"][0]),
         "x": data["x"].astype(np.float32),
@@ -314,6 +340,8 @@ def load_npz(path):
         "label_names": {},
         "preprocess_standardized": preprocess_standardized,
         "legacy_object_cache": legacy_object_cache,
+        "recording_subjects": recording_subjects,
+        "subjects_without_windows": subjects_without_windows,
     }
 
 
@@ -336,18 +364,45 @@ def _validate_cache_scope(dataset, name, data_root, subjects=None, sessions=None
         available = set(discover_cog_bci_recording_subjects(
             data_root, paradigm=cog_paradigm, sessions=sessions or (1, 2, 3)
         ))
-        missing = sorted(available - cached_subjects)
-        if missing:
-            preview = missing[:10]
-            suffix = "..." if len(missing) > len(preview) else ""
-            raise ValueError(
-                "Cache subject-scope mismatch: COG-BCI data root contains {} subjects "
-                "with requested {} recordings, but cache contains only {} subjects. "
-                "Missing subjects: {}{}. "
-                "Rebuild the cache with --rebuild-cache or remove the stale cache.".format(
-                    len(available), cog_paradigm, len(cached_subjects), preview, suffix
+        cache_recording_subjects = set(int(s) for s in dataset.get("recording_subjects", []))
+        if cache_recording_subjects:
+            new_subjects = sorted(available - cache_recording_subjects)
+            if new_subjects:
+                preview = new_subjects[:10]
+                suffix = "..." if len(new_subjects) > len(preview) else ""
+                raise ValueError(
+                    "Cache subject-scope mismatch: COG-BCI data root now contains "
+                    "{} requested {} recording subjects, but this cache was built "
+                    "when {} such subjects were visible. New subjects: {}{}. "
+                    "Rebuild the cache with --rebuild-cache.".format(
+                        len(available), cog_paradigm, len(cache_recording_subjects),
+                        preview, suffix
+                    )
                 )
-            )
+            missing_windows = sorted((available & cache_recording_subjects) - cached_subjects)
+            if missing_windows:
+                warnings.warn(
+                    "COG-BCI cache contains no usable windows for requested {} "
+                    "recording subjects {}. They will be absent from evaluation. "
+                    "This is valid when those subjects/tasks produce no windows or "
+                    "are intentionally excluded by split-quality checks; inspect "
+                    "the cache with inspect_datasets.py for formal reporting.".format(
+                        cog_paradigm, missing_windows
+                    )
+                )
+        else:
+            missing = sorted(available - cached_subjects)
+            if missing:
+                warnings.warn(
+                    "COG-BCI cache lacks metadata for recording_subjects and contains "
+                    "{} window subjects while the data root has {} requested {} "
+                    "recording subjects. Missing window subjects: {}. The cache will "
+                    "be used as its subject universe; rebuild once with --rebuild-cache "
+                    "to store explicit no-window exclusions.".format(
+                        len(cached_subjects), len(available), cog_paradigm,
+                        missing[:10],
+                    )
+                )
     if sessions is not None:
         requested_sessions = set(int(s) for s in sessions)
         cached_sessions = set(int(s) for s in np.unique(meta["session"].values))

@@ -3,6 +3,7 @@
 This file lists the full commands for running TSMNet, EEG-Conformer, EEGNet, BF-GCN, TAHAG, MDTN-GMDA, MS_TGC_SPDDSBN, SVM, LSCCN, LSTM, BiLSTM, Transformer, and ShallowCNN experiments on STEW, EEGMAT, and COG-BCI.
 
 Before formal training, rebuild strict caches once and inspect the split to confirm sampling rate, subject scope, train/validation/test counts, and subject-disjoint validation where applicable. Older caches with record-level standardization are rejected by the loader.
+For COG-BCI, all protocols run split-quality checks before training. Subjects with unusable train/validation/test splits are skipped by default; use `--allow-incomplete-splits` only for diagnostics.
 
 ## Split Inspection
 
@@ -303,6 +304,7 @@ Useful LSTM/BiLSTM parameters are `--recurrent-hidden`, `--recurrent-layers`, an
 - `cog_multi_session` uses COG-BCI sessions 1/2/3 as train/validation/test.
 - `loso` holds out one target subject and selects validation from source subjects only.
 - Cache construction performs filtering/resampling/windowing only. Robust normalization is fitted inside each split from source training windows only.
+- COG-BCI caches store recording-subject coverage and known no-window exclusions. A known absent subject is skipped consistently; newly added recording subjects require rebuilding the cache.
 - Train metrics are evaluated on non-augmented training windows; validation and test are also non-augmented.
 - EEG-Conformer, EEGNet, BF-GCN, TAHAG, MDTN-GMDA, MS_TGC_SPDDSBN, SVM, LSCCN, LSTM, BiLSTM, Transformer, and ShallowCNN hyperparameters in `run_experiment.py` and `run_batch_experiments.py` are passed to the corresponding training code.
 - Keep `data/`, `outputs/`, `__pycache__/`, and `*.pyc` out of the source release.
@@ -377,6 +379,7 @@ python run_experiment.py --model eegconformer --dataset cog-bci --cog-paradigm m
 
 - Cache files are checked for dataset name, sampling rate, and strict preprocessing metadata. If you change `--target-fs`, use a matching cache name or pass `--rebuild-cache`.
 - If `--cache` is omitted, cache names are generated automatically by dataset, paradigm, protocol, subject scope, sessions, and sampling rate.
+- For COG-BCI, older caches without recording-subject metadata are usable as their own subject universe but should be rebuilt once before formal reporting so no-window exclusions are explicit.
 - Cache construction does not use full-recording standardization. Robust normalization is fitted from source-domain training windows inside each split, then applied to validation and target/test windows.
 - Artifact-window rejection is off by default for the formal protocol so the target/test set remains fixed. Use `--artifact-z <value>` only for an explicitly reported ablation.
 - `single_session` uses the original contiguous sequential split within each task record: the last 20% is target/test, and the preceding source block is split into training/validation with `--single-val-size 0.125`, giving approximately train/validation/test = 70%/10%/20%.

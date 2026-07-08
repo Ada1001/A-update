@@ -193,11 +193,11 @@ def parse_args():
     parser.add_argument("--test-size", type=float, default=0.2,
                         help="Target/test fraction for single_session sequential time-block split.")
     parser.add_argument("--min-split-windows", type=int, default=2,
-                        help="Minimum split windows required for cog_multi_session quality checks.")
+                        help="Minimum split windows required for COG-BCI split quality checks.")
     parser.add_argument("--min-class-windows", type=int, default=2,
-                        help="Minimum per-class windows required for cog_multi_session quality checks.")
+                        help="Minimum per-class windows required for COG-BCI split quality checks.")
     parser.add_argument("--allow-incomplete-splits", action="store_true",
-                        help="Do not skip incomplete cog_multi_session subjects.")
+                        help="Do not skip incomplete COG-BCI split subjects.")
     parser.add_argument("--no-augment", action="store_true",
                         help="Disable light train-time augmentation for STEW/EEGMAT.")
     parser.add_argument("--no-target-adapt", action="store_true",
@@ -265,10 +265,18 @@ def main():
     project_root = os.path.abspath(os.path.dirname(__file__))
     for subject in subjects:
         split_val_size = args.single_val_size if args.protocol == "single_session" else args.val_size
-        split = make_split(dataset, args.protocol, subject, seed=args.seed,
-                           val_size=split_val_size, test_size=args.test_size)
+        try:
+            split = make_split(dataset, args.protocol, subject, seed=args.seed,
+                               val_size=split_val_size, test_size=args.test_size)
+        except (RuntimeError, ValueError) as exc:
+            if args.dataset == "cog-bci" and not args.allow_incomplete_splits:
+                print("Skipping subject {} because a valid {} split could not be made: {}".format(
+                    int(subject), args.protocol, exc
+                ))
+                continue
+            raise
         split_issues = []
-        if args.protocol == "cog_multi_session":
+        if args.dataset == "cog-bci":
             split_issues = split_validation_issues(
                 dataset,
                 split,
@@ -277,8 +285,8 @@ def main():
                 require_all_classes=True,
             )
             if split_issues and not args.allow_incomplete_splits:
-                print("Skipping subject {} due to incomplete cog_multi_session split: {}".format(
-                    int(subject), "; ".join(split_issues)
+                print("Skipping subject {} due to incomplete COG-BCI {} split: {}".format(
+                    int(subject), args.protocol, "; ".join(split_issues)
                 ))
                 continue
         subject_dir = os.path.join(out_root, "subject_{:02d}".format(int(subject)))

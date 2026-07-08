@@ -77,9 +77,22 @@ def main():
         recording_subjects = discover_cog_bci_recording_subjects(
             args.data_root, paradigm=args.cog_paradigm, sessions=sessions
         )
+        cached_subjects = sorted(int(s) for s in meta["subject"].unique())
+        cache_recording_subjects = ds.get("recording_subjects", [])
+        subjects_without_windows = ds.get("subjects_without_windows", [])
         print("available COG-BCI zip subjects:", len(zip_subjects), zip_subjects)
         print("available COG-BCI recording subjects:",
               len(recording_subjects), recording_subjects)
+        print("cache window subjects:", len(cached_subjects), cached_subjects)
+        if len(cache_recording_subjects):
+            print("cache recording subjects:",
+                  len(cache_recording_subjects), cache_recording_subjects)
+        if len(subjects_without_windows):
+            print("cache subjects without usable windows:",
+                  len(subjects_without_windows), subjects_without_windows)
+        raw_missing = sorted(set(recording_subjects) - set(cached_subjects))
+        if raw_missing:
+            print("COG-BCI recording subjects absent from window cache:", raw_missing)
     print(meta.groupby(["subject", "session", "task"]).size().head(30))
 
     if args.protocol is not None:
