@@ -11,6 +11,7 @@ from src.cl_tsmnet.experiment_utils import default_cache_path, default_target_fs
 from src.cl_tsmnet.splits import (
     iter_eval_subjects,
     make_split,
+    make_splits,
     split_summary,
     split_validation_issues,
 )
@@ -101,21 +102,25 @@ def main():
         rows = []
         for subject in eval_subjects:
             split_val_size = args.single_val_size if args.protocol == "single_session" else args.val_size
-            split = make_split(ds, args.protocol, subject, seed=args.seed,
-                               val_size=split_val_size, test_size=args.test_size)
-            row = split_summary(ds, split, subject)
-            row["split_issues"] = "; ".join(split_validation_issues(
-                ds, split,
-                min_windows=args.min_split_windows,
-                min_class_windows=args.min_class_windows,
-                require_all_classes=True,
-            ))
-            rows.append(row)
+            splits = make_splits(ds, args.protocol, subject, seed=args.seed,
+                                 val_size=split_val_size,
+                                 test_size=args.test_size)
+            for split in splits:
+                row = split_summary(ds, split, subject)
+                row["split_issues"] = "; ".join(split_validation_issues(
+                    ds, split,
+                    min_windows=args.min_split_windows,
+                    min_class_windows=args.min_class_windows,
+                    require_all_classes=True,
+                ))
+                rows.append(row)
         table = pd.DataFrame(rows)
-        display_cols = ["subject", "n_source", "n_target", "n_train", "n_val", "n_test",
+        display_cols = ["subject", "train_sessions", "test_session",
+                        "n_source", "n_target", "n_train", "n_val", "n_test",
                         "train_subjects", "val_subjects", "test_subjects",
                         "train_pct_total", "val_pct_total", "test_pct_total",
                         "train_labels", "val_labels", "test_labels"]
+        display_cols = [col for col in display_cols if col in table.columns]
         print("\nsplit protocol:", args.protocol)
         print(table[display_cols].to_string(index=False))
         numeric = table[["n_source", "n_target", "n_train", "n_val", "n_test"]]
@@ -132,7 +137,9 @@ def main():
         issue_rows = table[table["split_issues"].astype(str) != ""]
         if len(issue_rows):
             print("\nWARNING: split label/window quality issues:")
-            print(issue_rows[["subject", "split_issues"]].to_string(index=False))
+            issue_cols = [col for col in ["subject", "test_session", "split_issues"]
+                          if col in issue_rows.columns]
+            print(issue_rows[issue_cols].to_string(index=False))
         if args.dataset == "cog-bci" and args.protocol == "cog_multi_session":
             print("\nCOG-BCI per-subject/session/task window counts:")
             counts = (meta.groupby(["subject", "session", "task"])

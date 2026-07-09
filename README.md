@@ -67,7 +67,7 @@ Single-subject single-session, session 1 only:
 python run_experiment.py --dataset cog-bci --cog-paradigm nback --protocol single_session --cache outputs/cache/cog_nback_all_250hz_1s.npz --target-fs 250 --output outputs/tsmnet --epochs 30 --batch-size 64
 ```
 
-Single-subject multi-session, sessions 1 and 2 as source and session 3 as target:
+Single-subject cross-session transfer, sessions 1 and 2 as source and session 3 as target:
 
 ```powershell
 python run_experiment.py --dataset cog-bci --cog-paradigm nback --protocol cog_multi_session --cache outputs/cache/cog_nback_all_250hz_1s.npz --target-fs 250 --output outputs/tsmnet --epochs 30 --batch-size 64
@@ -87,7 +87,7 @@ Single-subject single-session, session 1 only:
 python run_experiment.py --dataset cog-bci --cog-paradigm matb --protocol single_session --cache outputs/cache/cog_matb_all_250hz_1s.npz --target-fs 250 --output outputs/tsmnet --epochs 30 --batch-size 64
 ```
 
-Single-subject multi-session, sessions 1 and 2 as source and session 3 as target:
+Single-subject cross-session transfer, sessions 1 and 2 as source and session 3 as target:
 
 ```powershell
 python run_experiment.py --dataset cog-bci --cog-paradigm matb --protocol cog_multi_session --cache outputs/cache/cog_matb_all_250hz_1s.npz --target-fs 250 --output outputs/tsmnet --epochs 30 --batch-size 64
@@ -320,7 +320,7 @@ Useful LSTM/BiLSTM parameters are `--recurrent-hidden`, `--recurrent-layers`, an
 ## Pre-run Audit Checklist
 
 - `single_session` is the original sequential split: each task record is time-sorted, the last 20% is test, and the previous 80% is split into train/validation with `--single-val-size 0.125`.
-- `cog_multi_session` uses COG-BCI sessions 1/2/3 as train/validation/test.
+- `cog_multi_session` uses COG-BCI S1+S2 -> S3 cross-session transfer. Validation is cut only from source sessions 1 and 2 by contiguous per-record/task blocks.
 - `loso` holds out one target subject and selects validation from source subjects only.
 - Cache construction performs filtering/resampling/windowing only. Robust normalization is fitted inside each split from source training windows only.
 - COG-BCI caches store recording-subject coverage and known no-window exclusions. A known absent subject is skipped consistently; newly added recording subjects require rebuilding the cache.
@@ -402,9 +402,9 @@ python run_experiment.py --model eegconformer --dataset cog-bci --cog-paradigm m
 - Cache construction does not use full-recording standardization. Robust normalization is fitted from source-domain training windows inside each split, then applied to validation and target/test windows.
 - Artifact-window rejection is off by default for the formal protocol so the target/test set remains fixed. Use `--artifact-z <value>` only for an explicitly reported ablation.
 - `single_session` uses the original contiguous sequential split within each task record: the last 20% is target/test, and the preceding source block is split into training/validation with `--single-val-size 0.125`, giving approximately train/validation/test = 70%/10%/20%.
-- `cog_multi_session` uses COG-BCI S1/S2/S3 as train/validation/test; `loso` randomly selects `ceil(20% * source_subjects)` source subjects for validation and uses the remaining source subjects for training.
+- `cog_multi_session` uses COG-BCI S1+S2 -> S3 cross-session transfer and takes validation only from source sessions 1 and 2; `loso` randomly selects `ceil(20% * source_subjects)` source subjects for validation and uses the remaining source subjects for training.
 - `aggregate_summary.csv` reports window-level test metrics, which are the primary metrics for this project.
 - `outputs/master_summary.csv` is append-only. Every completed run adds one row with model, dataset, protocol, settings, cache/output path, and numeric metric mean/std.
 - Full-dataset COG-BCI caches can take time to build because each subject zip is decompressed and read from EEGLAB `.set/.fdt` files.
 - Outputs are saved under `outputs/<dataset>_<protocol>_<model-or-bnorm>/` by default.
-- `summary.csv` stores per-subject raw window-level train/validation/test results.
+- `summary.csv` stores per-subject raw window-level train/validation/test results. For `cog_multi_session`, rows include `train_sessions=1,2` and `test_session=3`.

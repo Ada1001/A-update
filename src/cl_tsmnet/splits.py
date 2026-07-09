@@ -1,19 +1,4 @@
 import numpy as np
-from sklearn.model_selection import StratifiedShuffleSplit
-
-
-def _stratified_split(indices, y, test_size, seed):
-    indices = np.asarray(indices, dtype=np.int64)
-    if len(indices) == 0:
-        raise ValueError("Cannot split an empty index set")
-    labels = y[indices]
-    if len(np.unique(labels)) < 2:
-        cut = int(round(len(indices) * (1.0 - test_size)))
-        return indices[:cut], indices[cut:]
-    splitter = StratifiedShuffleSplit(n_splits=1, test_size=test_size,
-                                      random_state=seed)
-    tr_rel, te_rel = next(splitter.split(np.zeros(len(indices)), labels))
-    return indices[tr_rel], indices[te_rel]
 
 
 def _record_block_split(indices, meta, test_size, val_size):
@@ -43,6 +28,31 @@ def _record_block_split(indices, meta, test_size, val_size):
     return concat(train_parts), concat(val_parts), concat(test_parts)
 
 
+def _record_train_validation_split(indices, meta, val_size):
+    """Contiguous per-record train/validation split for source-only sessions."""
+    train_parts, val_parts = [], []
+    frame = meta.iloc[np.asarray(indices, dtype=np.int64)].copy()
+    frame["_idx"] = np.asarray(indices, dtype=np.int64)
+    group_cols = ["subject", "session", "paradigm", "task"]
+    for _, group in frame.groupby(group_cols, sort=True):
+        ordered = group.sort_values("start_sample")["_idx"].values.astype(np.int64)
+        n = len(ordered)
+        if n < 2:
+            train_parts.append(ordered)
+            continue
+        n_val = max(1, int(round(n * float(val_size))))
+        n_val = min(n_val, n - 1)
+        train_parts.append(ordered[:-n_val])
+        val_parts.append(ordered[-n_val:])
+
+    def concat(parts):
+        if not parts:
+            return np.asarray([], dtype=np.int64)
+        return np.concatenate(parts).astype(np.int64)
+
+    return concat(train_parts), concat(val_parts)
+
+
 def _subject_holdout_validation_split(source, meta, val_size, seed):
     source = np.asarray(source, dtype=np.int64)
     subjects = np.unique(meta.iloc[source]["subject"].values.astype(np.int64))
@@ -66,6 +76,41 @@ def _subject_holdout_validation_split(source, meta, val_size, seed):
     return train, val
 
 
+def _cog_s1s2_to_s3_split(dataset, eval_subject, val_size):
+    meta = dataset["meta"]
+    subject = meta["subject"].values.astype(np.int64)
+    session = meta["session"].values.astype(np.int64)
+    subj_mask = subject == int(eval_subject)
+    available_sessions = sorted(int(s) for s in np.unique(session[subj_mask]))
+    required_sessions = [1, 2, 3]
+    if not set(required_sessions).issubset(set(available_sessions)):
+        raise ValueError(
+            "COG-BCI S1+S2 -> S3 cross-session needs sessions {} for "
+            "subject {}; got {}".format(
+                required_sessions, int(eval_subject), available_sessions
+            )
+        )
+    train_sessions = (1, 2)
+    test_session = 3
+    source = np.flatnonzero(subj_mask & np.isin(session, np.asarray(train_sessions)))
+    test = np.flatnonzero(subj_mask & (session == int(test_session)))
+    train, val = _record_train_validation_split(source, meta, val_size)
+    if len(train) == 0 or len(val) == 0 or len(test) == 0:
+        raise RuntimeError(
+            "Invalid COG-BCI S1+S2 -> S3 split for subject {}: "
+            "train={}, val={}, test={}".format(
+                int(eval_subject), len(train), len(val), len(test)
+            )
+        )
+    return {
+        "train": train,
+        "val": val,
+        "test": test,
+        "train_sessions": train_sessions,
+        "test_session": int(test_session),
+    }
+
+
 def iter_eval_subjects(meta, protocol, dataset_name):
     subjects = sorted(int(s) for s in np.unique(meta["subject"].values))
     return subjects
@@ -74,7 +119,6 @@ def iter_eval_subjects(meta, protocol, dataset_name):
 def make_split(dataset, protocol, eval_subject, seed=42, val_size=0.2,
                test_size=0.2):
     meta = dataset["meta"]
-    y = dataset["y"]
     subject = meta["subject"].values.astype(np.int64)
     session = meta["session"].values.astype(np.int64)
     name = dataset["name"]
@@ -86,13 +130,7 @@ def make_split(dataset, protocol, eval_subject, seed=42, val_size=0.2,
     elif protocol == "cog_multi_session":
         if not name.startswith("cog-bci"):
             raise ValueError("cog_multi_session is only defined for COG-BCI")
-        train = np.flatnonzero((subject == int(eval_subject)) & (session == 1))
-        val = np.flatnonzero((subject == int(eval_subject)) & (session == 2))
-        test = np.flatnonzero((subject == int(eval_subject)) & (session == 3))
-        if len(train) == 0 or len(val) == 0:
-            source = np.flatnonzero((subject == int(eval_subject)) &
-                                    np.isin(session, np.asarray([1, 2])))
-            train, val = _stratified_split(source, y, val_size, seed + 1)
+        return _cog_s1s2_to_s3_split(dataset, eval_subject, val_size)
     elif protocol == "loso":
         test = np.flatnonzero(subject == int(eval_subject))
         source = np.flatnonzero(subject != int(eval_subject))
@@ -108,6 +146,10 @@ def make_split(dataset, protocol, eval_subject, seed=42, val_size=0.2,
 
 def make_splits(dataset, protocol, eval_subject, seed=42, val_size=0.2,
                 test_size=0.2):
+    if protocol == "cog_multi_session":
+        if not dataset["name"].startswith("cog-bci"):
+            raise ValueError("cog_multi_session is only defined for COG-BCI")
+        return [_cog_s1s2_to_s3_split(dataset, eval_subject, val_size)]
     return [make_split(dataset, protocol, eval_subject, seed=seed,
                        val_size=val_size, test_size=test_size)]
 
@@ -155,6 +197,8 @@ def split_summary(dataset, split, eval_subject):
     total = len(source) + len(test)
     return {
         "subject": int(eval_subject),
+        "train_sessions": ",".join(str(s) for s in split.get("train_sessions", [])),
+        "test_session": split.get("test_session", ""),
         "n_source": int(len(source)),
         "n_target": int(len(test)),
         "n_train": int(len(train)),
