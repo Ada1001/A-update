@@ -11,6 +11,7 @@ MSTGC_ABLATION_MODELS = [
     "mstgc_dta_ce",
     "mstgc_dta_cheb_ce",
     "mstgc_dta_cheb_eudsbn",
+    "mstgc_dta_cheb_spdmbn",
     "mstgc_dta_cheb_spdbn",
     "ms_tgc_spddsbn",
     "mstgc_wo_dta",

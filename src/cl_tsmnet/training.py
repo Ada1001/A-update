@@ -20,6 +20,7 @@ MSTGC_MODEL_TYPES = [
     "mstgc_dta_ce",
     "mstgc_dta_cheb_ce",
     "mstgc_dta_cheb_eudsbn",
+    "mstgc_dta_cheb_spdmbn",
     "mstgc_dta_cheb_spdbn",
     "mstgc_wo_dta",
     "mstgc_wo_cheb",
@@ -27,6 +28,7 @@ MSTGC_MODEL_TYPES = [
 ]
 MSTGC_SPD_MODEL_TYPES = [
     "ms_tgc_spddsbn",
+    "mstgc_dta_cheb_spdmbn",
     "mstgc_dta_cheb_spdbn",
     "mstgc_wo_dta",
     "mstgc_wo_cheb",
@@ -221,6 +223,7 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
         "mstgc_dta_ce": None,
         "mstgc_dta_cheb_ce": None,
         "mstgc_dta_cheb_eudsbn": None,
+        "mstgc_dta_cheb_spdmbn": "spdbn",
         "mstgc_dta_cheb_spdbn": "spdbn",
         "mstgc_wo_dta": "spddsbn",
         "mstgc_wo_cheb": "spddsbn",

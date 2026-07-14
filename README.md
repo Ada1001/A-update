@@ -244,6 +244,7 @@ The ablation variants are implemented in the same model file and can be selected
 | `mstgc_dta_ce` | DTA + CE, multi-scale temporal branch only |
 | `mstgc_dta_cheb_ce` | DTA + Cheb + CE |
 | `mstgc_dta_cheb_eudsbn` | DTA + Cheb + Euclidean DSBN |
+| `mstgc_dta_cheb_spdmbn` | DTA + Cheb + SPDMBN, mapped to TSMNet's original SPD manifold BN (`spdbn`) |
 | `mstgc_dta_cheb_spdbn` | DTA + Cheb + SPDBN, SPD BN without domain-specific statistics |
 | `ms_tgc_spddsbn` | DTA + Cheb + SPDDSBN, full fusion model |
 | `mstgc_wo_dta` | Full model without DTA; channel summary features feed Cheb |
@@ -253,7 +254,7 @@ The ablation variants are implemented in the same model file and can be selected
 Run all ablations on the three datasets:
 
 ```powershell
-python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models mstgc_dta_ce,mstgc_dta_cheb_ce,mstgc_dta_cheb_eudsbn,mstgc_dta_cheb_spdbn,ms_tgc_spddsbn,mstgc_wo_dta,mstgc_wo_cheb,mstgc_wo_spddsbn --epochs 30 --batch-size 64
+python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models mstgc_dta_ce,mstgc_dta_cheb_ce,mstgc_dta_cheb_eudsbn,mstgc_dta_cheb_spdmbn,mstgc_dta_cheb_spdbn,ms_tgc_spddsbn,mstgc_wo_dta,mstgc_wo_cheb,mstgc_wo_spddsbn --epochs 30 --batch-size 64
 ```
 
 ## SVM Baseline
