@@ -213,7 +213,7 @@ Useful tunable parameters are `--mdtn-hidden-dim`, `--mdtn-num-nodes`, `--mdtn-k
 
 ## MS_TGC_SPDDSBN Fusion Model
 
-MS_TGC_SPDDSBN combines the TSMNet-SPDDSBN SPD manifold branch with MDTN-style multi-scale temporal features and a Chebyshev graph-convolution feature encoder. The fusion is latent-level: the SPDDSBN log-Eig latent and graph-temporal latent are projected to a shared dimension and combined with a learnable gate before classification. It intentionally does not use MDTN-GMDA's domain-adversarial, MMD, or graph-matching losses. Training uses source-domain cross entropy only; target/test windows are used without labels only during the TSMNet-SPDDSBN statistics refit.
+MS_TGC_SPDDSBN uses a unified temporal-graph backbone. Every channel passes independently through the same multi-scale temporal kernels, scale attention fuses full channel-specific temporal maps, and Chebyshev propagation operates across electrodes at every time sample. Channel attention produces one graph-temporal sequence: its mean is the Euclidean graph latent, while its covariance enters BiMap, ReEig, SPDDSBN, and LogEig. The projected representations are combined by a learnable gate. The fusion model does not call TSMNet's CNN and does not use MDTN-GMDA's adversarial, MMD, or graph-matching losses. See `MS_TGC_GRAPH_ABLATION.md` for the complete architecture and graph protocol.
 
 Use `--model ms_tgc_spddsbn` with any dataset/protocol command above. Examples:
 
@@ -235,7 +235,7 @@ For a source-only ablation with no target-domain SPDDSBN refit, append:
 --no-target-adapt
 ```
 
-Useful tunable parameters are `--mstgc-temporal-hidden`, `--mstgc-graph-hidden`, `--mstgc-fusion-dim`, `--mstgc-kernel-length`, `--mstgc-num-heads`, `--mstgc-cheby-order`, `--mstgc-dropout`, and `--mstgc-num-nodes`.
+Useful tunable parameters are `--mstgc-temporal-hidden`, `--mstgc-graph-hidden`, `--mstgc-fusion-dim`, `--mstgc-kernel-length`, `--mstgc-time-points`, `--mstgc-num-heads`, `--mstgc-cheby-order`, `--mstgc-dropout`, `--mstgc-num-nodes`, and `--mstgc-graph-k`. `--mstgc-kernel-length` is defined at a 128 Hz reference rate and is adjusted to the dataset sampling rate.
 
 The ablation variants are implemented in the same model file and can be selected with `--model`:
 
@@ -247,14 +247,23 @@ The ablation variants are implemented in the same model file and can be selected
 | `mstgc_dta_cheb_spdmbn` | DTA + Cheb + SPDMBN, mapped to TSMNet's original SPD manifold BN (`spdbn`) |
 | `mstgc_dta_cheb_spdbn` | DTA + Cheb + SPDBN, SPD BN without domain-specific statistics |
 | `ms_tgc_spddsbn` | DTA + Cheb + SPDDSBN, full fusion model |
-| `mstgc_wo_dta` | Full model without DTA; channel summary features feed Cheb |
+| `mstgc_graph_prior` | Full model with a fixed 10-20 spatial prior graph |
+| `mstgc_graph_plv` | Full model with a fixed source-train mean PLV graph |
+| `mstgc_graph_multigraph` | Full model with spatial plus four-band source-train PLV graphs |
+| `mstgc_wo_dta` | One shared temporal scale replaces multi-scale attention |
 | `mstgc_wo_cheb` | Full model without Cheb; DTA features are fused directly |
-| `mstgc_wo_spddsbn` | Full fusion backbone with the TSMNet SPD branch but no SPDDSBN alignment |
+| `mstgc_wo_spddsbn` | Shared temporal-graph/SPD backbone without SPDDSBN alignment |
 
 Run all ablations on the three datasets:
 
 ```powershell
 python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models mstgc_dta_ce,mstgc_dta_cheb_ce,mstgc_dta_cheb_eudsbn,mstgc_dta_cheb_spdmbn,mstgc_dta_cheb_spdbn,ms_tgc_spddsbn,mstgc_wo_dta,mstgc_wo_cheb,mstgc_wo_spddsbn --epochs 30 --batch-size 64
+```
+
+Run the controlled graph-structure ablation:
+
+```powershell
+python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models ms_tgc_spddsbn,mstgc_graph_prior,mstgc_graph_plv,mstgc_graph_multigraph --epochs 30 --batch-size 64 --mstgc-graph-k 4
 ```
 
 ## SVM Baseline
@@ -345,7 +354,7 @@ python run_batch_experiments.py --datasets stew,eegmat --protocols single_sessio
 
 ## Baseline Defaults
 
-Baseline defaults are aligned with the local reference implementations where explicit examples are available: EEG-Conformer uses the 1 s Conformer setting family (`emb_size=40`, `depth=6`, `num_heads=5`), EEGNet follows `EEGNet/trainEEGNet.py` (`64/4/2`), and BF-GCN follows `BF-GCN/Simple_Demo.py` (`kadj=2`, `num_out=16`, `att_hidden=16`, `classifier_hidden=32`, `avgpool=2`). TAHAG follows the independent-transfer setting: adaptive graph learning, attention, source classification, GRL domain loss, and MMD loss. MDTN-GMDA follows the local `MDTN-GMDA/Net.py` components with hidden size 64, 4 attention heads, Cheby order 3, graph matching weight 0.1, and marginal/conditional MMD weights 0.01. MS_TGC_SPDDSBN uses the same TSMNet SPD branch defaults plus 64-dimensional temporal and graph features, 128-dimensional gated fusion, 4 attention heads, and Cheby order 3. SVM defaults to `LinearSVC` because flattened EEG windows are high-dimensional and LOSO repeatedly trains on thousands of windows; RBF `SVC` remains available as an explicitly reported slow ablation. LSCCN follows the local paper's 200-dimensional latent space and 3 dynamic-routing iterations, with PLV plus band-power feature fusion. LSTM/BiLSTM use hidden size 64, Transformer uses `d_model=64` with 4 heads and 2 layers, and ShallowCNN uses 40 temporal-spatial filters. For formal reporting, keep the default run and optionally add a small validation-only sweep or sensitivity analysis; do not tune on target/test labels.
+Baseline defaults are aligned with the local reference implementations where explicit examples are available: EEG-Conformer uses the 1 s Conformer setting family (`emb_size=40`, `depth=6`, `num_heads=5`), EEGNet follows `EEGNet/trainEEGNet.py` (`64/4/2`), and BF-GCN follows `BF-GCN/Simple_Demo.py` (`kadj=2`, `num_out=16`, `att_hidden=16`, `classifier_hidden=32`, `avgpool=2`). TAHAG follows the independent-transfer setting: adaptive graph learning, attention, source classification, GRL domain loss, and MMD loss. MDTN-GMDA follows the local `MDTN-GMDA/Net.py` components with hidden size 64, 4 attention heads, Cheby order 3, graph matching weight 0.1, and marginal/conditional MMD weights 0.01. MS_TGC_SPDDSBN uses 64-dimensional shared per-channel temporal maps, 64-dimensional graph maps, a 20-dimensional SPD subspace, 128-dimensional gated fusion, 4 attention heads, and Cheby order 3. SVM defaults to `LinearSVC` because flattened EEG windows are high-dimensional and LOSO repeatedly trains on thousands of windows; RBF `SVC` remains available as an explicitly reported slow ablation. LSCCN follows the local paper's 200-dimensional latent space and 3 dynamic-routing iterations, with PLV plus band-power feature fusion. LSTM/BiLSTM use hidden size 64, Transformer uses `d_model=64` with 4 heads and 2 layers, and ShallowCNN uses 40 temporal-spatial filters. For formal reporting, keep the default run and optionally add a small validation-only sweep or sensitivity analysis; do not tune on target/test labels.
 
 STEW:
 

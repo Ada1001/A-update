@@ -8,6 +8,9 @@ def _split_csv(value):
 
 
 MSTGC_ABLATION_MODELS = [
+    "mstgc_graph_prior",
+    "mstgc_graph_plv",
+    "mstgc_graph_multigraph",
     "mstgc_dta_ce",
     "mstgc_dta_cheb_ce",
     "mstgc_dta_cheb_eudsbn",
@@ -90,6 +93,8 @@ def parse_args():
     parser.add_argument("--mstgc-cheby-order", type=int, default=3)
     parser.add_argument("--mstgc-dropout", type=float, default=0.5)
     parser.add_argument("--mstgc-num-nodes", type=int, default=0)
+    parser.add_argument("--mstgc-graph-k", type=int, default=4)
+    parser.add_argument("--mstgc-time-points", type=int, default=64)
     parser.add_argument("--svm-estimator", default="linear-svc",
                         choices=["linear-svc", "svc"])
     parser.add_argument("--svm-kernel", default="rbf",
@@ -224,6 +229,8 @@ def main():
                             "--mstgc-cheby-order", str(args.mstgc_cheby_order),
                             "--mstgc-dropout", str(args.mstgc_dropout),
                             "--mstgc-num-nodes", str(args.mstgc_num_nodes),
+                            "--mstgc-graph-k", str(args.mstgc_graph_k),
+                            "--mstgc-time-points", str(args.mstgc_time_points),
                         ])
                     if model == "svm":
                         cmd.extend([

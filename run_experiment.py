@@ -22,6 +22,9 @@ from src.cl_tsmnet.training import train_one_split
 
 
 MSTGC_ABLATION_MODELS = [
+    "mstgc_graph_prior",
+    "mstgc_graph_plv",
+    "mstgc_graph_multigraph",
     "mstgc_dta_ce",
     "mstgc_dta_cheb_ce",
     "mstgc_dta_cheb_eudsbn",
@@ -33,6 +36,9 @@ MSTGC_ABLATION_MODELS = [
     "mstgc_wo_spddsbn",
 ]
 MSTGC_TARGET_ADAPT_MODELS = [
+    "mstgc_graph_prior",
+    "mstgc_graph_plv",
+    "mstgc_graph_multigraph",
     "mstgc_dta_cheb_eudsbn",
     "ms_tgc_spddsbn",
     "mstgc_wo_dta",
@@ -107,6 +113,7 @@ def parse_args():
     parser.add_argument("--model", choices=[
         "tsmnet", "eegconformer", "eegnet", "bfgcn", "tahag", "svm",
         "mdtn", "ms_tgc_spddsbn", "mstgc_dta_ce",
+        "mstgc_graph_prior", "mstgc_graph_plv", "mstgc_graph_multigraph",
         "mstgc_dta_cheb_ce", "mstgc_dta_cheb_eudsbn",
         "mstgc_dta_cheb_spdmbn", "mstgc_dta_cheb_spdbn",
         "mstgc_wo_dta", "mstgc_wo_cheb", "mstgc_wo_spddsbn",
@@ -177,6 +184,10 @@ def parse_args():
     parser.add_argument("--mstgc-dropout", type=float, default=0.5)
     parser.add_argument("--mstgc-num-nodes", type=int, default=0,
                         help="Cheby graph nodes for MS_TGC_SPDDSBN. 0 means use EEG channel count.")
+    parser.add_argument("--mstgc-graph-k", type=int, default=4,
+                        help="Neighbors retained in adaptive, prior, and PLV MS-TGC graphs.")
+    parser.add_argument("--mstgc-time-points", type=int, default=64,
+                        help="Temporal points retained before MS-TGC graph propagation and SPD covariance.")
     parser.add_argument("--svm-estimator", default="linear-svc",
                         choices=["linear-svc", "svc"],
                         help="linear-svc is the fast default; svc enables kernel SVM.")
@@ -278,13 +289,13 @@ def main():
     )
     artifact_z = None if args.no_artifact_reject else args.artifact_z
 
-    run_name = run_directory_name(dataset["name"], args.protocol, args.model, args.bnorm)
+    model_name = _model_label(args)
+    run_name = run_directory_name(dataset["name"], args.protocol, model_name, args.bnorm)
     out_root = os.path.join(args.output, run_name)
     if not os.path.exists(out_root):
         os.makedirs(out_root)
 
     results = []
-    model_name = _model_label(args)
     project_root = os.path.abspath(os.path.dirname(__file__))
     for subject in subjects:
         split_val_size = args.single_val_size if args.protocol == "single_session" else args.val_size
@@ -387,6 +398,8 @@ def main():
                 mstgc_cheby_order=args.mstgc_cheby_order,
                 mstgc_dropout=args.mstgc_dropout,
                 mstgc_num_nodes=args.mstgc_num_nodes,
+                mstgc_graph_k=args.mstgc_graph_k,
+                mstgc_time_points=args.mstgc_time_points,
                 recurrent_hidden=args.recurrent_hidden,
                 recurrent_layers=args.recurrent_layers,
                 recurrent_dropout=args.recurrent_dropout,
@@ -433,6 +446,11 @@ def main():
                 "val_size": split_val_size,
                 "test_size": args.test_size if args.protocol == "single_session" else "",
                 "split_issues": "; ".join(split_issues),
+                "mstgc_graph_mode": res.get("mstgc_graph_mode", ""),
+                "val_stat_refit": res.get("val_stat_refit", False),
+                "mstgc_architecture": res.get("mstgc_architecture", ""),
+                "mstgc_kernel_samples": res.get("mstgc_kernel_samples", ""),
+                "mstgc_time_points": res.get("mstgc_time_points", ""),
             }
             results.append(row)
             history = pd.DataFrame(res["history"])
@@ -464,7 +482,10 @@ def main():
             "lr": args.lr,
             "weight_decay": args.weight_decay,
             "seed": args.seed,
-            "target_adapt": target_adapt,
+            "target_adapt": any(bool(row["target_adapt"]) for row in results),
+            "target_adapt_requested": target_adapt,
+            "val_stat_refit": any(bool(row.get("val_stat_refit", False)) for row in results),
+            "mstgc_architecture": results[0].get("mstgc_architecture", ""),
             "augment": augment,
             "artifact_z": "" if artifact_z is None else artifact_z,
             "eegnet_temporal_filters": args.eegnet_temporal_filters if args.model == "eegnet" else "",
@@ -501,6 +522,10 @@ def main():
             "mstgc_cheby_order": args.mstgc_cheby_order if args.model in MSTGC_ABLATION_MODELS else "",
             "mstgc_dropout": args.mstgc_dropout if args.model in MSTGC_ABLATION_MODELS else "",
             "mstgc_num_nodes": args.mstgc_num_nodes if args.model in MSTGC_ABLATION_MODELS else "",
+            "mstgc_graph_k": args.mstgc_graph_k if args.model in MSTGC_ABLATION_MODELS else "",
+            "mstgc_time_points": args.mstgc_time_points if args.model in MSTGC_ABLATION_MODELS else "",
+            "mstgc_kernel_samples": results[0].get("mstgc_kernel_samples", "") if args.model in MSTGC_ABLATION_MODELS else "",
+            "mstgc_graph_mode": results[0].get("mstgc_graph_mode", "") if args.model in MSTGC_ABLATION_MODELS else "",
             "svm_estimator": args.svm_estimator if args.model == "svm" else "",
             "svm_kernel": args.svm_kernel if args.model == "svm" else "",
             "svm_c": args.svm_c if args.model == "svm" else "",

@@ -17,6 +17,9 @@ BFGCN_PLV_BANDS = [(4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 45.0)]
 LSCCN_CONNECTIVITY_BAND = (30.0, 45.0)
 MSTGC_MODEL_TYPES = [
     "ms_tgc_spddsbn",
+    "mstgc_graph_prior",
+    "mstgc_graph_plv",
+    "mstgc_graph_multigraph",
     "mstgc_dta_ce",
     "mstgc_dta_cheb_ce",
     "mstgc_dta_cheb_eudsbn",
@@ -28,6 +31,9 @@ MSTGC_MODEL_TYPES = [
 ]
 MSTGC_SPD_MODEL_TYPES = [
     "ms_tgc_spddsbn",
+    "mstgc_graph_prior",
+    "mstgc_graph_plv",
+    "mstgc_graph_multigraph",
     "mstgc_dta_cheb_spdmbn",
     "mstgc_dta_cheb_spdbn",
     "mstgc_wo_dta",
@@ -36,6 +42,9 @@ MSTGC_SPD_MODEL_TYPES = [
 ]
 MSTGC_TARGET_ADAPT_MODEL_TYPES = [
     "ms_tgc_spddsbn",
+    "mstgc_graph_prior",
+    "mstgc_graph_plv",
+    "mstgc_graph_multigraph",
     "mstgc_dta_cheb_eudsbn",
     "mstgc_wo_dta",
     "mstgc_wo_cheb",
@@ -212,14 +221,27 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
                          temporal_hidden=64, graph_hidden=64,
                          fusion_dim=128, kernel_length=16, num_heads=4,
                          cheby_order=3, dropout=0.5, num_nodes=0,
-                         variant="ms_tgc_spddsbn"):
-    from .ms_tgc_spddsbn import MSTGCSPDDSBN
+                         variant="ms_tgc_spddsbn", graph_mode="adaptive",
+                         graph_adjacencies=None, graph_neighbors=4,
+                         graph_time_points=64):
+    from .ms_tgc_spddsbn import GraphSPDManifoldHead, MSTGCSPDDSBN
 
     variant = str(variant)
     if variant not in MSTGC_MODEL_TYPES:
         raise ValueError("Unknown MS-TGC variant: {}".format(variant))
+    if int(cheby_order) < 1:
+        raise ValueError("MS-TGC Chebyshev order must be at least 1")
+    if int(graph_time_points) < 2 or int(graph_time_points) > int(nsamples):
+        raise ValueError(
+            "MS-TGC graph_time_points must be in [2, {}], got {}".format(
+                int(nsamples), int(graph_time_points)
+            )
+        )
     spd_bnorm = {
         "ms_tgc_spddsbn": "spddsbn",
+        "mstgc_graph_prior": "spddsbn",
+        "mstgc_graph_plv": "spddsbn",
+        "mstgc_graph_multigraph": "spddsbn",
         "mstgc_dta_ce": None,
         "mstgc_dta_cheb_ce": None,
         "mstgc_dta_cheb_eudsbn": None,
@@ -229,20 +251,21 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
         "mstgc_wo_cheb": "spddsbn",
         "mstgc_wo_spddsbn": None,
     }[variant]
+    use_cheb = variant not in ["mstgc_dta_ce", "mstgc_wo_cheb"]
     spd_branch = None
     if variant in MSTGC_SPD_MODEL_TYPES:
-        spd_branch = build_tsmnet(
-            project_root,
-            nchannels,
-            nsamples,
-            nclasses,
-            domains,
-            bnorm=spd_bnorm,
-            temporal_filters=temporal_filters,
-            spatial_filters=spatial_filters,
+        if int(graph_time_points) <= int(min(
+                subspacedims, graph_hidden if use_cheb else temporal_hidden)):
+            raise ValueError(
+                "MS-TGC SPD covariance needs graph_time_points greater than "
+                "the SPD subspace dimension"
+            )
+        _ensure_tsmnet_on_path(project_root)
+        spd_branch = GraphSPDManifoldHead(
+            feature_dim=(graph_hidden if use_cheb else temporal_hidden),
             subspacedims=subspacedims,
-            temp_kernel=temp_kernel,
-            device=device,
+            bnorm=spd_bnorm,
+            domains=domains,
         )
     spd_dim = int(subspacedims) * (int(subspacedims) + 1) // 2
     return MSTGCSPDDSBN(
@@ -259,9 +282,13 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
         dropout=dropout,
         num_nodes=num_nodes,
         use_dta=(variant != "mstgc_wo_dta"),
-        use_cheb=(variant not in ["mstgc_dta_ce", "mstgc_wo_cheb"]),
+        use_cheb=use_cheb,
         euclidean_dsbn=(variant == "mstgc_dta_cheb_eudsbn"),
         domains=domains,
+        graph_mode=graph_mode,
+        graph_adjacencies=graph_adjacencies,
+        graph_neighbors=graph_neighbors,
+        graph_time_points=graph_time_points,
     )
 
 
@@ -524,6 +551,118 @@ def _bfgcn_plv(windows, fs):
         plv[:, diag, diag] = 1.0
         adjs.append(plv.astype(np.float32))
     return np.stack(adjs, axis=-1).astype(np.float32)
+
+
+def _sparsify_symmetric_graph(adjacency, neighbors):
+    adjacency = np.asarray(adjacency, dtype=np.float32)
+    if adjacency.ndim != 2 or adjacency.shape[0] != adjacency.shape[1]:
+        raise ValueError("Adjacency must be a square matrix")
+    adjacency = np.nan_to_num(adjacency, nan=0.0, posinf=0.0, neginf=0.0)
+    adjacency = np.maximum(0.0, 0.5 * (adjacency + adjacency.T))
+    np.fill_diagonal(adjacency, 0.0)
+    n_nodes = adjacency.shape[0]
+    k = min(max(1, int(neighbors)), max(1, n_nodes - 1))
+    sparse = np.zeros_like(adjacency)
+    for row in range(n_nodes):
+        keep = np.argpartition(adjacency[row], -k)[-k:]
+        sparse[row, keep] = adjacency[row, keep]
+    sparse = np.maximum(sparse, sparse.T)
+    scale = float(np.max(sparse))
+    if scale > 0.0:
+        sparse /= scale
+    return sparse.astype(np.float32)
+
+
+def _mstgc_spatial_prior(channels, neighbors):
+    import mne
+
+    montage = mne.channels.make_standard_montage("standard_1020")
+    positions = montage.get_positions()["ch_pos"]
+    by_name = {str(name).lower(): value for name, value in positions.items()}
+    missing = [name for name in channels if str(name).lower() not in by_name]
+    if missing:
+        raise ValueError(
+            "Cannot build 10-20 spatial prior; montage positions are missing for {}"
+            .format(missing)
+        )
+    xyz = np.stack([by_name[str(name).lower()] for name in channels]).astype(np.float32)
+    distances = np.linalg.norm(xyz[:, None, :] - xyz[None, :, :], axis=-1)
+    nonzero = distances[distances > 0]
+    sigma = float(np.median(nonzero)) if len(nonzero) else 1.0
+    similarity = np.exp(-(distances ** 2) / (2.0 * sigma ** 2 + 1e-8))
+    return _sparsify_symmetric_graph(similarity, neighbors)
+
+
+def _mstgc_source_plv_graphs(dataset, train_indices, normalizer, neighbors,
+                              chunk_size=64):
+    sums = None
+    count = 0
+    indices = np.asarray(train_indices, dtype=np.int64)
+    for start in range(0, len(indices), int(chunk_size)):
+        chunk_idx = indices[start:start + int(chunk_size)]
+        windows = normalizer.transform_array(dataset["x"][chunk_idx])
+        batch_graphs = _bfgcn_plv(windows, dataset["fs"])
+        batch_sum = np.sum(batch_graphs, axis=0, dtype=np.float64)
+        sums = batch_sum if sums is None else sums + batch_sum
+        count += len(chunk_idx)
+    if count == 0:
+        raise ValueError("Cannot estimate a PLV graph from an empty source train split")
+    means = (sums / float(count)).astype(np.float32)
+    return np.stack([
+        _sparsify_symmetric_graph(means[..., band], neighbors)
+        for band in range(means.shape[-1])
+    ])
+
+
+def build_mstgc_graph_adjacencies(dataset, train_indices, normalizer,
+                                   graph_mode, neighbors=4):
+    mode = str(graph_mode)
+    if mode == "adaptive":
+        return None
+    channels = dataset.get("channels", [])
+    if len(channels) != dataset["x"].shape[1]:
+        raise ValueError(
+            "MS-TGC graph construction needs one channel name per EEG channel"
+        )
+    prior = _mstgc_spatial_prior(channels, neighbors)
+    if mode == "prior":
+        return prior[None, ...]
+    plv_graphs = _mstgc_source_plv_graphs(
+        dataset, train_indices, normalizer, neighbors
+    )
+    if mode == "plv":
+        mean_plv = _sparsify_symmetric_graph(
+            np.mean(plv_graphs, axis=0), neighbors
+        )
+        return mean_plv[None, ...]
+    if mode == "multigraph":
+        return np.concatenate([prior[None, ...], plv_graphs], axis=0)
+    raise ValueError("Unknown MS-TGC graph mode: {}".format(mode))
+
+
+def _save_mstgc_graph_state(model, channels, output_dir):
+    graph = getattr(model, "graph", None)
+    if graph is None:
+        return
+    with torch.no_grad():
+        adjacencies = graph._adjacencies().detach().cpu().numpy()
+        if graph.graph_logits is None:
+            weights = np.ones(adjacencies.shape[0], dtype=np.float32)
+        else:
+            weights = torch.softmax(graph.graph_logits, dim=0).detach().cpu().numpy()
+    if graph.graph_mode == "multigraph":
+        names = ["spatial_prior", "plv_theta", "plv_alpha", "plv_beta", "plv_gamma"]
+    else:
+        names = [str(graph.graph_mode)]
+    np.savez_compressed(
+        os.path.join(output_dir, "graph_state.npz"),
+        graph_mode=np.asarray([graph.graph_mode], dtype="U16"),
+        graph_names=np.asarray(names, dtype="U32"),
+        channels=np.asarray(channels, dtype="U32"),
+        adjacencies=adjacencies.astype(np.float32),
+        graph_weights=np.asarray(weights, dtype=np.float32),
+        neighbors=np.asarray([graph.neighbors], dtype=np.int64),
+    )
 
 
 def _lsccn_fused_features(windows, fs):
@@ -801,7 +940,7 @@ def refit_batchnorm(model, x, y, domains, train_idx, test_idx, device,
                 xt = normalizer.transform_array(xt)
             model.domainadapt_finetune(
                 torch.from_numpy(xt).float().to(device),
-                torch.from_numpy(y[idx]).long(),
+                torch.full((len(idx),), -1, dtype=torch.long),
                 torch.from_numpy(domains[idx]).long().to(device),
                 target_domains=np.unique(domains[test_idx]),
             )
@@ -848,6 +987,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     mstgc_fusion_dim=128, mstgc_kernel_length=16,
                     mstgc_num_heads=4, mstgc_cheby_order=3,
                     mstgc_dropout=0.5, mstgc_num_nodes=0,
+                    mstgc_graph_k=4, mstgc_time_points=64,
                     recurrent_hidden=64, recurrent_layers=1,
                     recurrent_dropout=0.5,
                     transformer_d_model=64, transformer_heads=4,
@@ -936,6 +1076,21 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                              temp_kernel=temp_kernel,
                              device=device)
     elif model_type in MSTGC_MODEL_TYPES:
+        mstgc_kernel_samples = max(
+            3, int(round(float(mstgc_kernel_length) * float(dataset["fs"]) / 128.0))
+        )
+        mstgc_graph_mode = {
+            "mstgc_graph_prior": "prior",
+            "mstgc_graph_plv": "plv",
+            "mstgc_graph_multigraph": "multigraph",
+        }.get(model_type, "adaptive")
+        graph_adjacencies = build_mstgc_graph_adjacencies(
+            dataset,
+            split["train"],
+            normalizer,
+            graph_mode=mstgc_graph_mode,
+            neighbors=mstgc_graph_k,
+        )
         model = build_ms_tgc_spddsbn(
             project_root, x.shape[1], x.shape[2], nclasses, domains[selected],
             temporal_filters=temporal_filters,
@@ -946,15 +1101,29 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
             temporal_hidden=mstgc_temporal_hidden,
             graph_hidden=mstgc_graph_hidden,
             fusion_dim=mstgc_fusion_dim,
-            kernel_length=mstgc_kernel_length,
+            kernel_length=mstgc_kernel_samples,
             num_heads=mstgc_num_heads,
             cheby_order=mstgc_cheby_order,
             dropout=mstgc_dropout,
             num_nodes=mstgc_num_nodes,
             variant=model_type,
+            graph_mode=mstgc_graph_mode,
+            graph_adjacencies=graph_adjacencies,
+            graph_neighbors=mstgc_graph_k,
+            graph_time_points=mstgc_time_points,
         ).to(device)
         if model_type not in MSTGC_TARGET_ADAPT_MODEL_TYPES:
             target_adapt = False
+        elif target_adapt:
+            train_domains = set(int(v) for v in np.unique(domains[split["train"]]))
+            test_domains = set(int(v) for v in np.unique(domains[split["test"]]))
+            if train_domains.intersection(test_domains):
+                warnings.warn(
+                    "MS-TGC target-statistics refit disabled because source train "
+                    "and target/test use the same domain id. This keeps within-session "
+                    "evaluation inductive."
+                )
+                target_adapt = False
     elif model_type == "eegconformer":
         model = build_eegconformer(x.shape[1], x.shape[2], nclasses,
                                    temporal_kernel=temp_kernel,
@@ -1138,6 +1307,13 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
 
     best_state, best_loss, best_epoch, bad_epochs = None, float("inf"), None, 0
     history = []
+    val_stat_refit = bool(
+        model_type in MSTGC_TARGET_ADAPT_MODEL_TYPES
+        and target_adapt
+        and not set(int(v) for v in np.unique(domains[split["train"]])).intersection(
+            set(int(v) for v in np.unique(domains[split["val"]]))
+        )
+    )
     target_iter = _cycle_loader(target_domain_loader) if (
         model_type in ["bfgcn", "tahag", "mdtn"] and target_adapt
     ) else None
@@ -1231,7 +1407,16 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                 kl_weight=lsccn_kl_weight,
             )
         else:
+            state_before_val_refit = None
+            if val_stat_refit:
+                state_before_val_refit = copy.deepcopy(model.state_dict())
+                refit_batchnorm(
+                    model, x, y, domains, split["train"], split["val"],
+                    device, target_adapt=True, normalizer=normalizer,
+                )
             val_metrics = evaluate(model, val_loader, device)
+            if state_before_val_refit is not None:
+                model.load_state_dict(state_before_val_refit)
         row = {"epoch": epoch, "train_loss": float(np.mean(batch_losses)),
                "val_loss": val_metrics["loss"],
                "val_bacc": val_metrics["balanced_accuracy"]}
@@ -1302,6 +1487,8 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
         torch.save(model.state_dict(), os.path.join(output_dir, "model.pt"))
+        if model_type in MSTGC_MODEL_TYPES:
+            _save_mstgc_graph_state(model, dataset.get("channels", []), output_dir)
 
     return {
         "history": history,
@@ -1317,4 +1504,20 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         "n_test": int(len(split["test"])),
         "artifact_z": "" if artifact_z is None else float(artifact_z),
         "decision_threshold": decision_threshold,
+        "mstgc_graph_mode": (
+            (getattr(model, "graph_mode", "") if getattr(model, "graph", None) is not None else "none")
+            if model_type in MSTGC_MODEL_TYPES else ""
+        ),
+        "val_stat_refit": bool(val_stat_refit),
+        "mstgc_architecture": (
+            "shared_channel_graph_spd_v2"
+            if model_type in MSTGC_MODEL_TYPES else ""
+        ),
+        "mstgc_kernel_samples": (
+            int(mstgc_kernel_samples)
+            if model_type in MSTGC_MODEL_TYPES else ""
+        ),
+        "mstgc_time_points": (
+            int(mstgc_time_points) if model_type in MSTGC_MODEL_TYPES else ""
+        ),
     }
