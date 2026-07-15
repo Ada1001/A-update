@@ -15,12 +15,16 @@ The full forward path is:
    into `[batch, channels, temporal_hidden, time]`.
 3. Chebyshev graph convolution propagates features over EEG channels at every
    time sample, directly coupling temporal and graph learning.
-4. Learned channel attention pools the maps into one shared
-   `[batch, graph_hidden, time]` graph-temporal sequence.
-5. Its temporal mean forms the Euclidean graph latent. Its covariance enters
-   BiMap, ReEig, SPDDSBN, and LogEig to form the SPD tangent-space latent.
-6. Both latents therefore share the full temporal-graph backbone. They are
-   projected to the same dimension and combined by a learned element-wise gate.
+4. Channel attention computes one reliability value per electrode and applies
+   `sqrt(alpha + epsilon)` weighting. Channels are not summed, so the output
+   remains `[batch, channels, graph_hidden, time]`.
+5. Channel and time axes become observations: `[B,C,F,L] -> [B,F,C*L]`.
+   The model estimates the observation mean and a trace-target shrinkage
+   covariance using `--mstgc-shrinkage` (default 0.1).
+6. Mean and covariance form one Gaussian augmented SPD matrix
+   `[[Sigma + mu*mu^T, mu], [mu^T, 1]]`. With `F=64`, its shape is 65 by 65.
+7. The only full-model readout is BiMap 65-to-20, ReEig, SPDDSBN, LogEig/Vec
+   210, Linear 210-to-128, and the classifier. There is no Euclidean/SPD gate.
 
 The model uses source cross-entropy only. It does not use MDTN-GMDA domain
 adversarial, graph matching, or MMD losses. When target adaptation is enabled,
@@ -35,7 +39,7 @@ learns a complete multi-scale temporal sequence for every channel and applies
 graph propagation before temporal pooling. Older results must not be mixed
 with current results.
 
-The fusion model no longer calls TSMNet's temporal and all-channel spatial
+The proposed model does not call TSMNet's temporal and all-channel spatial
 convolutions. It reuses the manifold operations in a private
 `GraphSPDManifoldHead`. The standalone TSMNet and all baselines are unchanged.
 
@@ -48,18 +52,20 @@ For input `[B, C, T]`, the default full model uses:
 | three shared temporal scales | three tensors `[B, C, 64, T]` |
 | scale-attention fusion and temporal pooling | `[B, C, 64, 64]` |
 | time-resolved Chebyshev propagation | `[B, C, 64, 64]` |
-| learned channel pooling | `[B, 64, 64]` |
-| Euclidean temporal mean | `[B, 64]` |
-| covariance before BiMap | `[B, 64, 64]` |
+| reliability-weighted maps, channels retained | `[B, C, 64, 64]` |
+| channel-time observations | `[B, 64, C*64]` |
+| first-order mean and shrinkage covariance | `[B,64,1]`, `[B,64,64]` |
+| Gaussian augmented SPD before BiMap | `[B, 65, 65]` |
 | SPD subspace after BiMap/ReEig/SPDDSBN | `[B, 20, 20]` |
 | LogEig tangent vector | `[B, 210]` |
-| projected Euclidean and SPD latents | two tensors `[B, 128]` |
-| gated fusion and classifier | `[B, classes]` |
+| tangent projection | `[B, 128]` |
+| classifier | `[B, classes]` |
 
 Defaults are temporal hidden 64, graph hidden 64, SPD subspace 20, fusion
 dimension 128, temporal base kernel 16 samples at the 128 Hz reference rate,
-64 graph time points, four scale-attention heads, Chebyshev order 3, dropout
-0.5, and graph k=4. The base kernel is sampling-rate adjusted before odd-kernel
+64 graph time points, covariance shrinkage 0.1, four scale-attention heads,
+Chebyshev order 3, dropout 0.5, and graph k=4. The base kernel is
+sampling-rate adjusted before odd-kernel
 construction: 128 Hz uses 17/9/5 and 250 Hz uses approximately 31/15/7.
 The standalone TSMNet options `temporal_filters`, `spatial_filters`, and
 `temp_kernel` no longer affect this fusion model.
@@ -67,7 +73,7 @@ The standalone TSMNet options `temporal_filters`, `spatial_filters`, and
 ## Graph ablation
 
 All four groups use the same data split, source-fitted normalizer, node
-features, Chebyshev order, SPDDSBN branch, fusion head, optimizer, and loss.
+features, Chebyshev order, augmented SPD head, optimizer, and loss.
 Only the graph source changes.
 
 | Model | Graph | Graph data |

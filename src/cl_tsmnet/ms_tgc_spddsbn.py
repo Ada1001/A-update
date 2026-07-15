@@ -247,21 +247,30 @@ class DomainBatchNorm1d(nn.Module):
 
 
 class GraphSPDManifoldHead(nn.Module):
-    """Build SPD features from the shared graph-temporal sequence."""
+    """Embed graph-temporal observations as a first/second-order SPD matrix."""
 
-    def __init__(self, feature_dim, subspacedims, bnorm, domains):
+    def __init__(self, feature_dim, subspacedims, bnorm, domains,
+                 shrinkage=0.1, covariance_epsilon=1e-5):
         super().__init__()
         import spdnets.batchnorm as bn
         import spdnets.modules as modules
 
         self.feature_dim = int(feature_dim)
-        self.subspacedims = int(min(subspacedims, feature_dim))
+        self.augmented_dim = self.feature_dim + 1
+        self.subspacedims = int(min(subspacedims, self.augmented_dim))
+        if self.subspacedims < 1:
+            raise ValueError("MS-TGC SPD subspace dimension must be positive")
+        self.shrinkage = float(shrinkage)
+        if not 0.0 <= self.shrinkage <= 1.0:
+            raise ValueError("MS-TGC covariance shrinkage must be in [0, 1]")
+        self.covariance_epsilon = float(covariance_epsilon)
+        if self.covariance_epsilon <= 0.0:
+            raise ValueError("MS-TGC covariance epsilon must be positive")
         self.bnorm = bnorm
         self.spd_device = torch.device("cpu")
-        self.cov_pooling = modules.CovariancePool()
         self.spdnet = nn.Sequential(
             modules.BiMap(
-                (1, self.feature_dim, self.subspacedims),
+                (1, self.augmented_dim, self.subspacedims),
                 dtype=torch.double, device=self.spd_device,
             ),
             modules.ReEig(threshold=1e-4),
@@ -294,11 +303,48 @@ class GraphSPDManifoldHead(nn.Module):
     def latent_dim(self):
         return self.subspacedims * (self.subspacedims + 1) // 2
 
-    def forward(self, sequence, domains):
-        covariance = self.cov_pooling(
-            sequence.to(device=self.spd_device, dtype=torch.double)
+    def build_augmented_spd(self, maps):
+        if maps.dim() != 4 or maps.shape[2] != self.feature_dim:
+            raise ValueError(
+                "Graph SPD input must be [batch, channels, {}, time], got {}"
+                .format(self.feature_dim, tuple(maps.shape))
+            )
+        batch, channels, features, time_points = maps.shape
+        observations = maps.permute(0, 2, 1, 3).reshape(
+            batch, features, channels * time_points
+        ).to(device=self.spd_device, dtype=torch.double)
+        count = observations.shape[-1]
+        if count < 2:
+            raise ValueError("Graph SPD covariance needs at least two observations")
+
+        mean = observations.mean(dim=-1, keepdim=True)
+        centered = observations - mean
+        covariance = torch.bmm(centered, centered.transpose(1, 2)) / float(count - 1)
+        eye = torch.eye(
+            features, device=covariance.device, dtype=covariance.dtype
+        ).unsqueeze(0)
+        trace_scale = torch.diagonal(
+            covariance, dim1=-2, dim2=-1
+        ).sum(dim=-1).view(batch, 1, 1) / float(features)
+        covariance = (
+            (1.0 - self.shrinkage) * covariance
+            + self.shrinkage * trace_scale * eye
+            + self.covariance_epsilon * eye
         )
-        latent = self.spdnet(covariance)
+
+        second_moment = covariance + torch.bmm(mean, mean.transpose(1, 2))
+        top = torch.cat([second_moment, mean], dim=2)
+        bottom = torch.cat([
+            mean.transpose(1, 2),
+            torch.ones(batch, 1, 1, device=mean.device, dtype=mean.dtype),
+        ], dim=2)
+        augmented = torch.cat([top, bottom], dim=1)
+        augmented = 0.5 * (augmented + augmented.transpose(1, 2))
+        return augmented.unsqueeze(1)
+
+    def forward(self, maps, domains):
+        augmented = self.build_augmented_spd(maps)
+        latent = self.spdnet(augmented)
         if hasattr(self, "spdbnorm"):
             latent = self.spdbnorm(latent)
         if hasattr(self, "spddsbnorm"):
@@ -307,7 +353,7 @@ class GraphSPDManifoldHead(nn.Module):
             )
         return self.logeig(latent)
 
-    def refit_domains(self, sequence, domains):
+    def refit_domains(self, maps, domains):
         if not hasattr(self, "spddsbnorm"):
             return
         import spdnets.batchnorm as bn
@@ -315,17 +361,17 @@ class GraphSPDManifoldHead(nn.Module):
         self.spddsbnorm.set_test_stats_mode(bn.BatchNormTestStatsMode.REFIT)
         with torch.no_grad():
             for domain in domains.unique():
-                self.forward(sequence[domains == domain], domains[domains == domain])
+                self.forward(maps[domains == domain], domains[domains == domain])
         self.spddsbnorm.set_test_stats_mode(bn.BatchNormTestStatsMode.BUFFER)
 
-    def refit_global(self, sequence, domains):
+    def refit_global(self, maps, domains):
         if not hasattr(self, "spdbnorm"):
             return
         import spdnets.batchnorm as bn
 
         self.spdbnorm.set_test_stats_mode(bn.BatchNormTestStatsMode.REFIT)
         with torch.no_grad():
-            self.forward(sequence, domains)
+            self.forward(maps, domains)
         self.spdbnorm.set_test_stats_mode(bn.BatchNormTestStatsMode.BUFFER)
 
 
@@ -338,7 +384,7 @@ class MSTGCSPDDSBN(nn.Module):
                  num_nodes=0, use_dta=True, use_cheb=True,
                  euclidean_dsbn=False, domains=None, graph_mode="adaptive",
                  graph_adjacencies=None, graph_neighbors=4,
-                 graph_time_points=64):
+                 graph_time_points=64, channel_weight_epsilon=1e-6):
         super().__init__()
         self.spd_branch = spd_branch
         self.use_spd = spd_branch is not None
@@ -347,6 +393,9 @@ class MSTGCSPDDSBN(nn.Module):
         self.use_euclidean_dsbn = bool(euclidean_dsbn)
         self.graph_mode = str(graph_mode)
         self.graph_device = torch.device("cpu")
+        self.channel_weight_epsilon = float(channel_weight_epsilon)
+        if self.channel_weight_epsilon <= 0.0:
+            raise ValueError("Channel-weight epsilon must be positive")
         graph_nodes = int(num_nodes) if int(num_nodes) > 0 else int(nchannels)
         if self.use_cheb and graph_nodes != int(nchannels):
             raise ValueError(
@@ -378,36 +427,25 @@ class MSTGCSPDDSBN(nn.Module):
             self.graph = None
             feature_dim = int(temporal_hidden)
 
-        self.channel_pool = nn.Linear(feature_dim, 1)
+        self.feature_dim = feature_dim
+        self.channel_score = nn.Linear(feature_dim, 1)
         self.eudsbnorm = None
         if self.use_euclidean_dsbn:
             self.eudsbnorm = DomainBatchNorm1d(
                 feature_dim, [0] if domains is None else domains
             )
 
-        self.graph_project = nn.Sequential(
-            nn.LayerNorm(feature_dim),
-            nn.Linear(feature_dim, int(fusion_dim)),
+        readout_dim = (
+            int(getattr(spd_branch, "latent_dim", spd_latent_dim))
+            if self.use_spd else feature_dim
+        )
+        self.readout = nn.Sequential(
+            nn.LayerNorm(readout_dim),
+            nn.Linear(readout_dim, int(fusion_dim)),
             nn.GELU(),
-        )
-        if self.use_spd:
-            actual_spd_dim = int(getattr(spd_branch, "latent_dim", spd_latent_dim))
-            self.spd_project = nn.Sequential(
-                nn.LayerNorm(actual_spd_dim),
-                nn.Linear(actual_spd_dim, int(fusion_dim)),
-                nn.GELU(),
-            )
-            self.gate = nn.Sequential(
-                nn.Linear(int(fusion_dim) * 2, int(fusion_dim)),
-                nn.Sigmoid(),
-            )
-        else:
-            self.spd_project = None
-            self.gate = None
-        self.classifier = nn.Sequential(
             nn.Dropout(float(dropout)),
-            nn.Linear(int(fusion_dim), int(nclasses)),
         )
+        self.classifier = nn.Linear(int(fusion_dim), int(nclasses))
 
     @property
     def spddsbnorm(self):
@@ -422,55 +460,58 @@ class MSTGCSPDDSBN(nn.Module):
         self.temporal.to(device=device, dtype=dtype, non_blocking=non_blocking)
         if self.graph is not None:
             self.graph.to(device=device, dtype=dtype, non_blocking=non_blocking)
-        self.channel_pool.to(device=device, dtype=dtype, non_blocking=non_blocking)
+        self.channel_score.to(device=device, dtype=dtype, non_blocking=non_blocking)
         if self.eudsbnorm is not None:
             self.eudsbnorm.to(device=device, dtype=dtype, non_blocking=non_blocking)
-        self.graph_project.to(device=device, dtype=dtype, non_blocking=non_blocking)
-        if self.spd_project is not None:
-            self.spd_project.to(device=device, dtype=dtype, non_blocking=non_blocking)
-            self.gate.to(device=device, dtype=dtype, non_blocking=non_blocking)
+        self.readout.to(device=device, dtype=dtype, non_blocking=non_blocking)
         self.classifier.to(device=device, dtype=dtype, non_blocking=non_blocking)
         return self
 
-    def _shared_sequence(self, x):
+    def _weighted_graph_maps(self, x, return_weights=False):
         maps, _ = self.temporal(x.to(self.graph_device, dtype=torch.float32))
         if self.graph is not None:
             maps = self.graph(maps)
-        node_summary = torch.mean(maps, dim=-1)
-        channel_weights = torch.softmax(self.channel_pool(node_summary), dim=1)
-        sequence = torch.sum(maps * channel_weights.unsqueeze(-1), dim=1)
-        return sequence
+        channel_summary = torch.mean(maps, dim=-1)
+        channel_weights = torch.softmax(
+            self.channel_score(channel_summary), dim=1
+        )
+        reliability = torch.sqrt(
+            channel_weights + self.channel_weight_epsilon
+        ).unsqueeze(-1)
+        weighted_maps = maps * reliability
+        if return_weights:
+            return weighted_maps, channel_weights
+        return weighted_maps
 
-    def _euclidean_latent(self, sequence, domains=None, apply_dsbn=True):
-        latent = torch.mean(sequence, dim=-1)
+    def _first_order_readout(self, maps, domains=None, apply_dsbn=True):
+        observations = maps.permute(0, 2, 1, 3).reshape(
+            maps.shape[0], maps.shape[2], -1
+        )
+        latent = torch.mean(observations, dim=-1)
         if self.eudsbnorm is not None and apply_dsbn:
             latent = self.eudsbnorm(latent, domains.to(self.graph_device))
         return latent
 
     def forward(self, x, d):
-        sequence = self._shared_sequence(x)
-        graph_latent = self._euclidean_latent(sequence, d, apply_dsbn=True)
-        graph_feature = self.graph_project(graph_latent)
-        if not self.use_spd:
-            return self.classifier(graph_feature)
-        spd_latent = self.spd_branch(sequence, d)
-        spd_feature = self.spd_project(
-            spd_latent.to(self.graph_device, dtype=torch.float32)
-        )
-        gate = self.gate(torch.cat([spd_feature, graph_feature], dim=1))
-        fused = gate * spd_feature + (1.0 - gate) * graph_feature
-        return self.classifier(fused)
+        maps = self._weighted_graph_maps(x)
+        if self.use_spd:
+            latent = self.spd_branch(maps, d).to(
+                self.graph_device, dtype=torch.float32
+            )
+        else:
+            latent = self._first_order_readout(maps, d, apply_dsbn=True)
+        return self.classifier(self.readout(latent))
 
     def domainadapt_finetune(self, x, y, d, target_domains):
         was_training = self.training
         self.eval()
         with torch.no_grad():
-            sequence = self._shared_sequence(x)
+            maps = self._weighted_graph_maps(x)
             if self.spd_branch is not None:
-                self.spd_branch.refit_domains(sequence, d)
+                self.spd_branch.refit_domains(maps, d)
             if self.eudsbnorm is not None:
-                features = self._euclidean_latent(
-                    sequence, d, apply_dsbn=False
+                features = self._first_order_readout(
+                    maps, d, apply_dsbn=False
                 )
                 self.eudsbnorm.refit_domain_stats(features, d)
         self.train(was_training)
@@ -481,6 +522,6 @@ class MSTGCSPDDSBN(nn.Module):
         was_training = self.training
         self.eval()
         with torch.no_grad():
-            sequence = self._shared_sequence(x)
-            self.spd_branch.refit_global(sequence, d)
+            maps = self._weighted_graph_maps(x)
+            self.spd_branch.refit_global(maps, d)
         self.train(was_training)

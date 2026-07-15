@@ -95,6 +95,7 @@ def parse_args():
     parser.add_argument("--mstgc-num-nodes", type=int, default=0)
     parser.add_argument("--mstgc-graph-k", type=int, default=4)
     parser.add_argument("--mstgc-time-points", type=int, default=64)
+    parser.add_argument("--mstgc-shrinkage", type=float, default=0.1)
     parser.add_argument("--svm-estimator", default="linear-svc",
                         choices=["linear-svc", "svc"])
     parser.add_argument("--svm-kernel", default="rbf",
@@ -231,6 +232,7 @@ def main():
                             "--mstgc-num-nodes", str(args.mstgc_num_nodes),
                             "--mstgc-graph-k", str(args.mstgc_graph_k),
                             "--mstgc-time-points", str(args.mstgc_time_points),
+                            "--mstgc-shrinkage", str(args.mstgc_shrinkage),
                         ])
                     if model == "svm":
                         cmd.extend([

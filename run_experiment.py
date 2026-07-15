@@ -188,6 +188,8 @@ def parse_args():
                         help="Neighbors retained in adaptive, prior, and PLV MS-TGC graphs.")
     parser.add_argument("--mstgc-time-points", type=int, default=64,
                         help="Temporal points retained before MS-TGC graph propagation and SPD covariance.")
+    parser.add_argument("--mstgc-shrinkage", type=float, default=0.1,
+                        help="Trace-target covariance shrinkage used before augmented SPD embedding.")
     parser.add_argument("--svm-estimator", default="linear-svc",
                         choices=["linear-svc", "svc"],
                         help="linear-svc is the fast default; svc enables kernel SVM.")
@@ -400,6 +402,7 @@ def main():
                 mstgc_num_nodes=args.mstgc_num_nodes,
                 mstgc_graph_k=args.mstgc_graph_k,
                 mstgc_time_points=args.mstgc_time_points,
+                mstgc_shrinkage=args.mstgc_shrinkage,
                 recurrent_hidden=args.recurrent_hidden,
                 recurrent_layers=args.recurrent_layers,
                 recurrent_dropout=args.recurrent_dropout,
@@ -451,6 +454,7 @@ def main():
                 "mstgc_architecture": res.get("mstgc_architecture", ""),
                 "mstgc_kernel_samples": res.get("mstgc_kernel_samples", ""),
                 "mstgc_time_points": res.get("mstgc_time_points", ""),
+                "mstgc_shrinkage": res.get("mstgc_shrinkage", ""),
             }
             results.append(row)
             history = pd.DataFrame(res["history"])
@@ -524,6 +528,7 @@ def main():
             "mstgc_num_nodes": args.mstgc_num_nodes if args.model in MSTGC_ABLATION_MODELS else "",
             "mstgc_graph_k": args.mstgc_graph_k if args.model in MSTGC_ABLATION_MODELS else "",
             "mstgc_time_points": args.mstgc_time_points if args.model in MSTGC_ABLATION_MODELS else "",
+            "mstgc_shrinkage": args.mstgc_shrinkage if args.model in MSTGC_ABLATION_MODELS else "",
             "mstgc_kernel_samples": results[0].get("mstgc_kernel_samples", "") if args.model in MSTGC_ABLATION_MODELS else "",
             "mstgc_graph_mode": results[0].get("mstgc_graph_mode", "") if args.model in MSTGC_ABLATION_MODELS else "",
             "svm_estimator": args.svm_estimator if args.model == "svm" else "",

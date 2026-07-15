@@ -223,7 +223,7 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
                          cheby_order=3, dropout=0.5, num_nodes=0,
                          variant="ms_tgc_spddsbn", graph_mode="adaptive",
                          graph_adjacencies=None, graph_neighbors=4,
-                         graph_time_points=64):
+                         graph_time_points=64, covariance_shrinkage=0.1):
     from .ms_tgc_spddsbn import GraphSPDManifoldHead, MSTGCSPDDSBN
 
     variant = str(variant)
@@ -254,18 +254,19 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
     use_cheb = variant not in ["mstgc_dta_ce", "mstgc_wo_cheb"]
     spd_branch = None
     if variant in MSTGC_SPD_MODEL_TYPES:
-        if int(graph_time_points) <= int(min(
-                subspacedims, graph_hidden if use_cheb else temporal_hidden)):
+        spd_feature_dim = int(graph_hidden if use_cheb else temporal_hidden)
+        if int(subspacedims) > spd_feature_dim + 1:
             raise ValueError(
-                "MS-TGC SPD covariance needs graph_time_points greater than "
-                "the SPD subspace dimension"
+                "MS-TGC SPD subspace dimension {} exceeds augmented input "
+                "dimension {}".format(subspacedims, spd_feature_dim + 1)
             )
         _ensure_tsmnet_on_path(project_root)
         spd_branch = GraphSPDManifoldHead(
-            feature_dim=(graph_hidden if use_cheb else temporal_hidden),
+            feature_dim=spd_feature_dim,
             subspacedims=subspacedims,
             bnorm=spd_bnorm,
             domains=domains,
+            shrinkage=covariance_shrinkage,
         )
     spd_dim = int(subspacedims) * (int(subspacedims) + 1) // 2
     return MSTGCSPDDSBN(
@@ -988,6 +989,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     mstgc_num_heads=4, mstgc_cheby_order=3,
                     mstgc_dropout=0.5, mstgc_num_nodes=0,
                     mstgc_graph_k=4, mstgc_time_points=64,
+                    mstgc_shrinkage=0.1,
                     recurrent_hidden=64, recurrent_layers=1,
                     recurrent_dropout=0.5,
                     transformer_d_model=64, transformer_heads=4,
@@ -1111,6 +1113,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
             graph_adjacencies=graph_adjacencies,
             graph_neighbors=mstgc_graph_k,
             graph_time_points=mstgc_time_points,
+            covariance_shrinkage=mstgc_shrinkage,
         ).to(device)
         if model_type not in MSTGC_TARGET_ADAPT_MODEL_TYPES:
             target_adapt = False
@@ -1510,7 +1513,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         ),
         "val_stat_refit": bool(val_stat_refit),
         "mstgc_architecture": (
-            "shared_channel_graph_spd_v2"
+            "shared_channel_graph_augmented_spd_v3"
             if model_type in MSTGC_MODEL_TYPES else ""
         ),
         "mstgc_kernel_samples": (
@@ -1519,5 +1522,8 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         ),
         "mstgc_time_points": (
             int(mstgc_time_points) if model_type in MSTGC_MODEL_TYPES else ""
+        ),
+        "mstgc_shrinkage": (
+            float(mstgc_shrinkage) if model_type in MSTGC_MODEL_TYPES else ""
         ),
     }
