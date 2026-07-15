@@ -250,14 +250,24 @@ class GraphSPDManifoldHead(nn.Module):
     """Embed graph-temporal observations as a first/second-order SPD matrix."""
 
     def __init__(self, feature_dim, subspacedims, bnorm, domains,
-                 shrinkage=0.1, covariance_epsilon=1e-5):
+                 shrinkage=0.1, covariance_epsilon=1e-5,
+                 representation="augmented"):
         super().__init__()
         import spdnets.batchnorm as bn
         import spdnets.modules as modules
 
         self.feature_dim = int(feature_dim)
         self.augmented_dim = self.feature_dim + 1
-        self.subspacedims = int(min(subspacedims, self.augmented_dim))
+        self.representation = str(representation)
+        if self.representation not in ["covariance", "augmented"]:
+            raise ValueError(
+                "MS-TGC SPD representation must be covariance or augmented"
+            )
+        self.spd_input_dim = (
+            self.feature_dim if self.representation == "covariance"
+            else self.augmented_dim
+        )
+        self.subspacedims = int(min(subspacedims, self.spd_input_dim))
         if self.subspacedims < 1:
             raise ValueError("MS-TGC SPD subspace dimension must be positive")
         self.shrinkage = float(shrinkage)
@@ -270,7 +280,7 @@ class GraphSPDManifoldHead(nn.Module):
         self.spd_device = torch.device("cpu")
         self.spdnet = nn.Sequential(
             modules.BiMap(
-                (1, self.augmented_dim, self.subspacedims),
+                (1, self.spd_input_dim, self.subspacedims),
                 dtype=torch.double, device=self.spd_device,
             ),
             modules.ReEig(threshold=1e-4),
@@ -303,7 +313,7 @@ class GraphSPDManifoldHead(nn.Module):
     def latent_dim(self):
         return self.subspacedims * (self.subspacedims + 1) // 2
 
-    def build_augmented_spd(self, maps):
+    def _moments(self, maps):
         if maps.dim() != 4 or maps.shape[2] != self.feature_dim:
             raise ValueError(
                 "Graph SPD input must be [batch, channels, {}, time], got {}"
@@ -331,6 +341,11 @@ class GraphSPDManifoldHead(nn.Module):
             + self.shrinkage * trace_scale * eye
             + self.covariance_epsilon * eye
         )
+        return mean, covariance
+
+    def build_augmented_spd(self, maps):
+        mean, covariance = self._moments(maps)
+        batch = maps.shape[0]
 
         second_moment = covariance + torch.bmm(mean, mean.transpose(1, 2))
         top = torch.cat([second_moment, mean], dim=2)
@@ -342,9 +357,15 @@ class GraphSPDManifoldHead(nn.Module):
         augmented = 0.5 * (augmented + augmented.transpose(1, 2))
         return augmented.unsqueeze(1)
 
+    def build_spd(self, maps):
+        if self.representation == "covariance":
+            _, covariance = self._moments(maps)
+            return covariance.unsqueeze(1)
+        return self.build_augmented_spd(maps)
+
     def forward(self, maps, domains):
-        augmented = self.build_augmented_spd(maps)
-        latent = self.spdnet(augmented)
+        spd = self.build_spd(maps)
+        latent = self.spdnet(spd)
         if hasattr(self, "spdbnorm"):
             latent = self.spdbnorm(latent)
         if hasattr(self, "spddsbnorm"):
@@ -384,14 +405,20 @@ class MSTGCSPDDSBN(nn.Module):
                  num_nodes=0, use_dta=True, use_cheb=True,
                  euclidean_dsbn=False, domains=None, graph_mode="adaptive",
                  graph_adjacencies=None, graph_neighbors=4,
-                 graph_time_points=64, channel_weight_epsilon=1e-6):
+                 graph_time_points=64, channel_weight_epsilon=1e-6,
+                 use_channel_attention=True):
         super().__init__()
         self.spd_branch = spd_branch
+        self.representation = (
+            getattr(spd_branch, "representation", "mean")
+            if spd_branch is not None else "mean"
+        )
         self.use_spd = spd_branch is not None
         self.use_dta = bool(use_dta)
         self.use_cheb = bool(use_cheb)
         self.use_euclidean_dsbn = bool(euclidean_dsbn)
         self.graph_mode = str(graph_mode)
+        self.use_channel_attention = bool(use_channel_attention)
         self.graph_device = torch.device("cpu")
         self.channel_weight_epsilon = float(channel_weight_epsilon)
         if self.channel_weight_epsilon <= 0.0:
@@ -428,7 +455,9 @@ class MSTGCSPDDSBN(nn.Module):
             feature_dim = int(temporal_hidden)
 
         self.feature_dim = feature_dim
-        self.channel_score = nn.Linear(feature_dim, 1)
+        self.channel_score = (
+            nn.Linear(feature_dim, 1) if self.use_channel_attention else None
+        )
         self.eudsbnorm = None
         if self.use_euclidean_dsbn:
             self.eudsbnorm = DomainBatchNorm1d(
@@ -460,7 +489,10 @@ class MSTGCSPDDSBN(nn.Module):
         self.temporal.to(device=device, dtype=dtype, non_blocking=non_blocking)
         if self.graph is not None:
             self.graph.to(device=device, dtype=dtype, non_blocking=non_blocking)
-        self.channel_score.to(device=device, dtype=dtype, non_blocking=non_blocking)
+        if self.channel_score is not None:
+            self.channel_score.to(
+                device=device, dtype=dtype, non_blocking=non_blocking
+            )
         if self.eudsbnorm is not None:
             self.eudsbnorm.to(device=device, dtype=dtype, non_blocking=non_blocking)
         self.readout.to(device=device, dtype=dtype, non_blocking=non_blocking)
@@ -471,10 +503,17 @@ class MSTGCSPDDSBN(nn.Module):
         maps, _ = self.temporal(x.to(self.graph_device, dtype=torch.float32))
         if self.graph is not None:
             maps = self.graph(maps)
-        channel_summary = torch.mean(maps, dim=-1)
-        channel_weights = torch.softmax(
-            self.channel_score(channel_summary), dim=1
-        )
+        if self.use_channel_attention:
+            channel_summary = torch.mean(maps, dim=-1)
+            channel_weights = torch.softmax(
+                self.channel_score(channel_summary), dim=1
+            )
+        else:
+            channel_weights = torch.full(
+                (maps.shape[0], maps.shape[1], 1),
+                1.0 / float(maps.shape[1]),
+                device=maps.device, dtype=maps.dtype,
+            )
         reliability = torch.sqrt(
             channel_weights + self.channel_weight_epsilon
         ).unsqueeze(-1)

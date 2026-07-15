@@ -93,11 +93,15 @@ is disabled; `--no-target-adapt` disables target SPDDSBN refitting entirely.
 | `mstgc_dta_ce` | Multi-scale | No | First-order mean | None |
 | `mstgc_dta_cheb_ce` | Multi-scale | Yes | First-order mean | None |
 | `mstgc_dta_cheb_eudsbn` | Multi-scale | Yes | First-order mean | Euclidean DSBN |
+| `mstgc_mean_ce` | Multi-scale | Yes | First-order mean | None; alias of `mstgc_dta_cheb_ce` |
+| `mstgc_cov_spddsbn` | Multi-scale | Yes | Covariance SPD | SPDDSBN |
+| `mstgc_augspd_spddsbn` | Multi-scale | Yes | Augmented SPD | SPDDSBN; full-model alias |
 | `mstgc_dta_cheb_spdmbn` | Multi-scale | Yes | Augmented SPD | Shared SPD BN |
 | `mstgc_dta_cheb_spdbn` | Multi-scale | Yes | Augmented SPD | Shared SPD BN alias |
 | `ms_tgc_spddsbn` | Multi-scale | Yes | Augmented SPD | SPDDSBN |
 | `mstgc_wo_dta` | Single-scale | Yes | Augmented SPD | SPDDSBN |
 | `mstgc_wo_cheb` | Multi-scale | No | Augmented SPD | SPDDSBN |
+| `mstgc_wo_channel_attention` | Multi-scale | Yes | Augmented SPD | SPDDSBN; uniform channel weights |
 | `mstgc_wo_spddsbn` | Multi-scale | Yes | Augmented SPD | None |
 
 The graph-source variants `mstgc_graph_prior`, `mstgc_graph_plv`, and

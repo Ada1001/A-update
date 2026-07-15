@@ -17,6 +17,10 @@ BFGCN_PLV_BANDS = [(4.0, 8.0), (8.0, 13.0), (13.0, 30.0), (30.0, 45.0)]
 LSCCN_CONNECTIVITY_BAND = (30.0, 45.0)
 MSTGC_MODEL_TYPES = [
     "ms_tgc_spddsbn",
+    "mstgc_mean_ce",
+    "mstgc_cov_spddsbn",
+    "mstgc_augspd_spddsbn",
+    "mstgc_wo_channel_attention",
     "mstgc_graph_prior",
     "mstgc_graph_plv",
     "mstgc_graph_multigraph",
@@ -31,6 +35,9 @@ MSTGC_MODEL_TYPES = [
 ]
 MSTGC_SPD_MODEL_TYPES = [
     "ms_tgc_spddsbn",
+    "mstgc_cov_spddsbn",
+    "mstgc_augspd_spddsbn",
+    "mstgc_wo_channel_attention",
     "mstgc_graph_prior",
     "mstgc_graph_plv",
     "mstgc_graph_multigraph",
@@ -42,6 +49,9 @@ MSTGC_SPD_MODEL_TYPES = [
 ]
 MSTGC_TARGET_ADAPT_MODEL_TYPES = [
     "ms_tgc_spddsbn",
+    "mstgc_cov_spddsbn",
+    "mstgc_augspd_spddsbn",
+    "mstgc_wo_channel_attention",
     "mstgc_graph_prior",
     "mstgc_graph_plv",
     "mstgc_graph_multigraph",
@@ -239,6 +249,10 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
         )
     spd_bnorm = {
         "ms_tgc_spddsbn": "spddsbn",
+        "mstgc_mean_ce": None,
+        "mstgc_cov_spddsbn": "spddsbn",
+        "mstgc_augspd_spddsbn": "spddsbn",
+        "mstgc_wo_channel_attention": "spddsbn",
         "mstgc_graph_prior": "spddsbn",
         "mstgc_graph_plv": "spddsbn",
         "mstgc_graph_multigraph": "spddsbn",
@@ -252,13 +266,22 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
         "mstgc_wo_spddsbn": None,
     }[variant]
     use_cheb = variant not in ["mstgc_dta_ce", "mstgc_wo_cheb"]
+    spd_representation = (
+        "covariance" if variant == "mstgc_cov_spddsbn" else "augmented"
+    )
     spd_branch = None
     if variant in MSTGC_SPD_MODEL_TYPES:
         spd_feature_dim = int(graph_hidden if use_cheb else temporal_hidden)
-        if int(subspacedims) > spd_feature_dim + 1:
+        spd_input_dim = (
+            spd_feature_dim if spd_representation == "covariance"
+            else spd_feature_dim + 1
+        )
+        if int(subspacedims) > spd_input_dim:
             raise ValueError(
-                "MS-TGC SPD subspace dimension {} exceeds augmented input "
-                "dimension {}".format(subspacedims, spd_feature_dim + 1)
+                "MS-TGC SPD subspace dimension {} exceeds {} input "
+                "dimension {}".format(
+                    subspacedims, spd_representation, spd_input_dim
+                )
             )
         _ensure_tsmnet_on_path(project_root)
         spd_branch = GraphSPDManifoldHead(
@@ -267,6 +290,7 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
             bnorm=spd_bnorm,
             domains=domains,
             shrinkage=covariance_shrinkage,
+            representation=spd_representation,
         )
     spd_dim = int(subspacedims) * (int(subspacedims) + 1) // 2
     return MSTGCSPDDSBN(
@@ -290,6 +314,7 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
         graph_adjacencies=graph_adjacencies,
         graph_neighbors=graph_neighbors,
         graph_time_points=graph_time_points,
+        use_channel_attention=(variant != "mstgc_wo_channel_attention"),
     )
 
 
@@ -1525,5 +1550,9 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         ),
         "mstgc_shrinkage": (
             float(mstgc_shrinkage) if model_type in MSTGC_MODEL_TYPES else ""
+        ),
+        "mstgc_representation": (
+            getattr(model, "representation", "")
+            if model_type in MSTGC_MODEL_TYPES else ""
         ),
     }

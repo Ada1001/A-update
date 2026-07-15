@@ -83,6 +83,23 @@ Only the graph source changes.
 | `mstgc_graph_plv` | fixed mean four-band PLV graph | source train windows only |
 | `mstgc_graph_multigraph` | one spatial graph plus theta/alpha/beta/gamma PLV graphs | montage plus source train windows only |
 
+### Update policy
+
+- `ms_tgc_spddsbn` has one global adaptive adjacency shared by all windows in
+  a split. Selected top-k edge weights and the shared Chebyshev parameters are
+  updated by source classification loss.
+- `mstgc_graph_prior` and `mstgc_graph_plv` store adjacency matrices as fixed
+  buffers. They never receive gradients; only the common Chebyshev feature
+  extractor is trained.
+- `mstgc_graph_multigraph` also keeps all five adjacency matrices fixed. One
+  Chebyshev layer is reused for every graph, and trainable global softmax logits
+  combine their outputs. It therefore learns common graph filters and graph
+  importance, not five independent graph networks.
+- PLV and multigraph connectivity is estimated separately for every split from
+  source training windows only. It is a source-population graph in LOSO and a
+  source-session graph in cross-session experiments, not a target-informed or
+  sample-specific graph.
+
 The adaptive graph is symmetrized and top-k sparsified on each forward pass.
 Fixed graphs are also symmetrized and top-k sparsified. This keeps graph density
 approximately controlled across groups. `--mstgc-graph-k` controls k and
@@ -94,6 +111,39 @@ and sparsifies the result. The multi-graph variant applies one shared Chebyshev
 layer to all five graphs and learns only the graph-mixture logits. Sharing the
 Chebyshev parameters prevents the multi-graph group from gaining five copies
 of the graph-convolution capacity.
+
+## Statistical representation ablation
+
+This group keeps the multi-scale temporal encoder, adaptive Chebyshev graph,
+channel reliability, optimizer, split, and classifier width fixed.
+
+| Reported model | Representation | Manifold input | Normalization |
+|---|---|---|---|
+| `mstgc_mean_ce` | first-order mean | none | none |
+| `mstgc_cov_spddsbn` | shrinkage covariance | `64 x 64 -> 20 x 20` | SPDDSBN |
+| `mstgc_augspd_spddsbn` | mean plus covariance | `65 x 65 -> 20 x 20` | SPDDSBN |
+
+`mstgc_mean_ce` is exactly the existing `mstgc_dta_cheb_ce` model, and
+`mstgc_augspd_spddsbn` is exactly the full `ms_tgc_spddsbn` model. Do not report
+both names as separate independent experiments. The main inferential contrast
+is covariance-only versus augmented SPDDSBN because both have the same
+20-dimensional SPD output and 210-dimensional tangent classifier; only the
+first-order mean embedding differs.
+
+## Module ablation after the augmented-SPD redesign
+
+The required primary module set is now:
+
+| Model | Removed or replaced component |
+|---|---|
+| `mstgc_wo_dta` | three-scale attention replaced by one shared temporal scale |
+| `mstgc_wo_cheb` | channel graph propagation removed |
+| `mstgc_wo_channel_attention` | learned reliability replaced by fixed `1/C` reliability |
+| `mstgc_wo_spddsbn` | SPDDSBN removed while augmented SPD is retained |
+
+Use `--mstgc-shrinkage 0`, `0.05`, `0.1`, and `0.2` as a sensitivity analysis,
+not as four extra named architectures. The prespecified primary value remains
+0.1 and must not be selected with target/test performance.
 
 Validation and target/test windows never contribute to prior or PLV graph
 estimation. Target labels are never read by graph construction or adaptation.

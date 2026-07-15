@@ -22,6 +22,10 @@ from src.cl_tsmnet.training import train_one_split
 
 
 MSTGC_ABLATION_MODELS = [
+    "mstgc_mean_ce",
+    "mstgc_cov_spddsbn",
+    "mstgc_augspd_spddsbn",
+    "mstgc_wo_channel_attention",
     "mstgc_graph_prior",
     "mstgc_graph_plv",
     "mstgc_graph_multigraph",
@@ -36,6 +40,9 @@ MSTGC_ABLATION_MODELS = [
     "mstgc_wo_spddsbn",
 ]
 MSTGC_TARGET_ADAPT_MODELS = [
+    "mstgc_cov_spddsbn",
+    "mstgc_augspd_spddsbn",
+    "mstgc_wo_channel_attention",
     "mstgc_graph_prior",
     "mstgc_graph_plv",
     "mstgc_graph_multigraph",
@@ -113,6 +120,8 @@ def parse_args():
     parser.add_argument("--model", choices=[
         "tsmnet", "eegconformer", "eegnet", "bfgcn", "tahag", "svm",
         "mdtn", "ms_tgc_spddsbn", "mstgc_dta_ce",
+        "mstgc_mean_ce", "mstgc_cov_spddsbn", "mstgc_augspd_spddsbn",
+        "mstgc_wo_channel_attention",
         "mstgc_graph_prior", "mstgc_graph_plv", "mstgc_graph_multigraph",
         "mstgc_dta_cheb_ce", "mstgc_dta_cheb_eudsbn",
         "mstgc_dta_cheb_spdmbn", "mstgc_dta_cheb_spdbn",
@@ -455,6 +464,7 @@ def main():
                 "mstgc_kernel_samples": res.get("mstgc_kernel_samples", ""),
                 "mstgc_time_points": res.get("mstgc_time_points", ""),
                 "mstgc_shrinkage": res.get("mstgc_shrinkage", ""),
+                "mstgc_representation": res.get("mstgc_representation", ""),
             }
             results.append(row)
             history = pd.DataFrame(res["history"])
@@ -531,6 +541,7 @@ def main():
             "mstgc_shrinkage": args.mstgc_shrinkage if args.model in MSTGC_ABLATION_MODELS else "",
             "mstgc_kernel_samples": results[0].get("mstgc_kernel_samples", "") if args.model in MSTGC_ABLATION_MODELS else "",
             "mstgc_graph_mode": results[0].get("mstgc_graph_mode", "") if args.model in MSTGC_ABLATION_MODELS else "",
+            "mstgc_representation": results[0].get("mstgc_representation", "") if args.model in MSTGC_ABLATION_MODELS else "",
             "svm_estimator": args.svm_estimator if args.model == "svm" else "",
             "svm_kernel": args.svm_kernel if args.model == "svm" else "",
             "svm_c": args.svm_c if args.model == "svm" else "",

@@ -241,6 +241,9 @@ The ablation variants are implemented in the same model file and can be selected
 
 | Model name | Meaning |
 |---|---|
+| `mstgc_mean_ce` | Explicit alias of `mstgc_dta_cheb_ce`: first-order mean + CE |
+| `mstgc_cov_spddsbn` | Covariance-only SPD + SPDDSBN (`64 -> 20` by default) |
+| `mstgc_augspd_spddsbn` | Explicit alias of the full `ms_tgc_spddsbn` augmented-SPD model |
 | `mstgc_dta_ce` | Shared multi-scale DTA + reliability weighting + first-order mean + CE |
 | `mstgc_dta_cheb_ce` | DTA + Cheb + reliability weighting + first-order mean + CE |
 | `mstgc_dta_cheb_eudsbn` | DTA + Cheb + first-order mean + Euclidean DSBN |
@@ -252,12 +255,19 @@ The ablation variants are implemented in the same model file and can be selected
 | `mstgc_graph_multigraph` | Full model with spatial plus four-band source-train PLV graphs |
 | `mstgc_wo_dta` | One shared temporal scale replaces multi-scale attention |
 | `mstgc_wo_cheb` | Full augmented-SPD model without Cheb propagation |
+| `mstgc_wo_channel_attention` | Fixed uniform channel reliability replaces learned channel attention |
 | `mstgc_wo_spddsbn` | Full augmented-SPD path without manifold normalization |
 
 Run all ablations on the three datasets:
 
 ```powershell
-python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models mstgc_dta_ce,mstgc_dta_cheb_ce,mstgc_dta_cheb_eudsbn,mstgc_dta_cheb_spdmbn,mstgc_dta_cheb_spdbn,ms_tgc_spddsbn,mstgc_wo_dta,mstgc_wo_cheb,mstgc_wo_spddsbn --epochs 30 --batch-size 64
+python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models mstgc_dta_ce,mstgc_dta_cheb_ce,mstgc_dta_cheb_eudsbn,mstgc_dta_cheb_spdmbn,ms_tgc_spddsbn,mstgc_wo_dta,mstgc_wo_cheb,mstgc_wo_channel_attention,mstgc_wo_spddsbn --epochs 30 --batch-size 64
+```
+
+Run the controlled statistical-representation comparison without duplicate aliases:
+
+```powershell
+python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models mstgc_mean_ce,mstgc_cov_spddsbn,mstgc_augspd_spddsbn --epochs 30 --batch-size 64
 ```
 
 Run the controlled graph-structure ablation:

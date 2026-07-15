@@ -8,6 +8,10 @@ def _split_csv(value):
 
 
 MSTGC_ABLATION_MODELS = [
+    "mstgc_mean_ce",
+    "mstgc_cov_spddsbn",
+    "mstgc_augspd_spddsbn",
+    "mstgc_wo_channel_attention",
     "mstgc_graph_prior",
     "mstgc_graph_plv",
     "mstgc_graph_multigraph",
