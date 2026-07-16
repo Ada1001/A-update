@@ -33,6 +33,11 @@ the validation-selected checkpoint. Same-domain within-session refitting is
 disabled. LOSO validation-domain refits are temporary and are restored after
 each validation-loss calculation.
 
+Refitting uses `--refit-batch-size 16` by default. The temporal-graph backbone
+extracts pre-BN SPD features in GPU mini-batches; compact `20 x 20` matrices are
+then fitted once per domain on CPU. This preserves full-domain REFIT statistics
+without materializing every raw EEG window and temporal scale on GPU at once.
+
 Earlier versions expanded one pooled DTA vector across nodes or used five
 summary statistics as the channel-specific component. The current version
 learns a complete multi-scale temporal sequence for every channel and applies

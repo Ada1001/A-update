@@ -954,7 +954,7 @@ def _cycle_loader(loader):
 
 
 def refit_batchnorm(model, x, y, domains, train_idx, test_idx, device,
-                    target_adapt=True, normalizer=None):
+                    target_adapt=True, normalizer=None, batch_size=64):
     model.eval()
     with torch.no_grad():
         has_spddsbn = hasattr(model, "spddsbnorm")
@@ -964,12 +964,21 @@ def refit_batchnorm(model, x, y, domains, train_idx, test_idx, device,
             xt = x[idx]
             if normalizer is not None:
                 xt = normalizer.transform_array(xt)
-            model.domainadapt_finetune(
-                torch.from_numpy(xt).float().to(device),
-                torch.full((len(idx),), -1, dtype=torch.long),
-                torch.from_numpy(domains[idx]).long().to(device),
-                target_domains=np.unique(domains[test_idx]),
-            )
+            xt = torch.from_numpy(xt).float()
+            dt = torch.from_numpy(domains[idx]).long()
+            if hasattr(model, "domainadapt_finetune_batched"):
+                model.domainadapt_finetune_batched(
+                    xt, dt,
+                    target_domains=np.unique(domains[test_idx]),
+                    batch_size=batch_size,
+                )
+            else:
+                model.domainadapt_finetune(
+                    xt.to(device),
+                    torch.full((len(idx),), -1, dtype=torch.long),
+                    dt.to(device),
+                    target_domains=np.unique(domains[test_idx]),
+                )
         elif hasattr(model, "finetune"):
             xt = x[train_idx]
             if normalizer is not None:
@@ -1014,7 +1023,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     mstgc_num_heads=4, mstgc_cheby_order=3,
                     mstgc_dropout=0.5, mstgc_num_nodes=0,
                     mstgc_graph_k=4, mstgc_time_points=64,
-                    mstgc_shrinkage=0.1,
+                    mstgc_shrinkage=0.1, refit_batch_size=16,
                     recurrent_hidden=64, recurrent_layers=1,
                     recurrent_dropout=0.5,
                     transformer_d_model=64, transformer_heads=4,
@@ -1142,16 +1151,6 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         ).to(device)
         if model_type not in MSTGC_TARGET_ADAPT_MODEL_TYPES:
             target_adapt = False
-        elif target_adapt:
-            train_domains = set(int(v) for v in np.unique(domains[split["train"]]))
-            test_domains = set(int(v) for v in np.unique(domains[split["test"]]))
-            if train_domains.intersection(test_domains):
-                warnings.warn(
-                    "MS-TGC target-statistics refit disabled because source train "
-                    "and target/test use the same domain id. This keeps within-session "
-                    "evaluation inductive."
-                )
-                target_adapt = False
     elif model_type == "eegconformer":
         model = build_eegconformer(x.shape[1], x.shape[2], nclasses,
                                    temporal_kernel=temp_kernel,
@@ -1441,6 +1440,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                 refit_batchnorm(
                     model, x, y, domains, split["train"], split["val"],
                     device, target_adapt=True, normalizer=normalizer,
+                    batch_size=refit_batch_size,
                 )
             val_metrics = evaluate(model, val_loader, device)
             if state_before_val_refit is not None:
@@ -1464,7 +1464,8 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
 
     if model_type == "tsmnet" or model_type in MSTGC_TARGET_ADAPT_MODEL_TYPES:
         refit_batchnorm(model, x, y, domains, split["train"], split["test"], device,
-                        target_adapt=target_adapt, normalizer=normalizer)
+                        target_adapt=target_adapt, normalizer=normalizer,
+                        batch_size=refit_batch_size)
     decision_threshold = ""
     if model_type == "bfgcn":
         train_metrics = evaluate_bfgcn(model, train_eval_loader, device)
@@ -1555,4 +1556,5 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
             getattr(model, "representation", "")
             if model_type in MSTGC_MODEL_TYPES else ""
         ),
+        "refit_batch_size": int(refit_batch_size),
     }

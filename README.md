@@ -235,6 +235,11 @@ For a source-only ablation with no target-domain SPDDSBN refit, append:
 --no-target-adapt
 ```
 
+SPDDSBN refitting extracts pre-normalization manifold features in small GPU
+batches and fits each domain once on CPU. `--refit-batch-size` controls only
+this post-checkpoint step and defaults to 16; it does not change the training
+batch size or metric definition. Reduce it to 8 or 4 on a busy GPU.
+
 Useful tunable parameters are `--mstgc-temporal-hidden`, `--mstgc-graph-hidden`, `--mstgc-fusion-dim`, `--mstgc-kernel-length`, `--mstgc-time-points`, `--mstgc-num-heads`, `--mstgc-cheby-order`, `--mstgc-dropout`, `--mstgc-num-nodes`, `--mstgc-graph-k`, and `--mstgc-shrinkage`. `--mstgc-fusion-dim` is retained for CLI compatibility but now means the post-LogEig representation width, not a branch-fusion width. `--mstgc-kernel-length` is defined at a 128 Hz reference rate and is adjusted to the dataset sampling rate.
 
 The ablation variants are implemented in the same model file and can be selected with `--model`:

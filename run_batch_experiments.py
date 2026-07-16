@@ -48,6 +48,7 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--refit-batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=42)
@@ -158,7 +159,8 @@ def main():
                         "--master-summary", args.master_summary,
                         "--epochs", str(args.epochs),
                         "--patience", str(args.patience),
-                        "--batch-size", str(args.batch_size),
+                    "--batch-size", str(args.batch_size),
+                    "--refit-batch-size", str(args.refit_batch_size),
                         "--lr", str(args.lr),
                         "--weight-decay", str(args.weight_decay),
                         "--seed", str(args.seed),

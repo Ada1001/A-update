@@ -37,6 +37,8 @@ MS_TGC_SPDDSBN ablations are implemented in the same `src/cl_tsmnet/ms_tgc_spdds
 
 Graph-source ablations keep the full model fixed: `ms_tgc_spddsbn` learns a source-CE adaptive top-k graph, `mstgc_graph_prior` uses a fixed standard 10-20 spatial graph, `mstgc_graph_plv` uses a fixed four-band mean PLV graph estimated only from source training windows, and `mstgc_graph_multigraph` fuses the spatial graph with theta/alpha/beta/gamma source-train PLV graphs using shared Chebyshev weights. Every subject output stores `graph_state.npz` for reproducibility.
 
+MS-TGC target-statistics refitting is streamed with `--refit-batch-size 16` by default. GPU batches produce pre-BN `20 x 20` manifold features, which are accumulated on CPU and fitted once per domain. This is statistically equivalent to the former all-window refit and avoids a LOSO-sized GPU tensor. The value is recorded in result CSV files.
+
 Use `--model lsccn` to run the LSCCN baseline from `Latent_Space_Coding_Capsule_Network_for_Mental_Workload_Classification.docx`. The adapter computes the paper-style fused feature matrix inside the DataLoader: 5-band log-power node features are concatenated with gamma-band PLV connectivity, then passed through a VAE encoder, 1D convolution, primary capsules, and dynamic-routing digit capsules. The default latent dimension is 200 and routing iterations are 3, matching the paper. LSCCN is source-only in this project; target windows are not used during training.
 For binary LSCCN runs, the final capsule score decision threshold is calibrated on validation windows only and then fixed for train/validation/test reporting; the threshold is saved as `decision_threshold` in `summary.csv`.
 

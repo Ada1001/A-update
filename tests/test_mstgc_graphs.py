@@ -348,6 +348,49 @@ class MSTGCGraphTests(unittest.TestCase):
             with self.subTest(variant=variant):
                 self.assertEqual(tuple(model(windows, domains).shape), (4, 2))
 
+    def test_batched_spd_refit_matches_full_refit_and_limits_gpu_batches(self):
+        common = dict(
+            project_root=os.getcwd(), nchannels=4, nsamples=32, nclasses=2,
+            domains=np.asarray([0, 1]), temporal_hidden=4,
+            graph_hidden=4, fusion_dim=6, kernel_length=4,
+            num_heads=2, cheby_order=2, dropout=0.0,
+            graph_time_points=8, subspacedims=3,
+            covariance_shrinkage=0.1, variant="mstgc_cov_spddsbn",
+        )
+        torch.manual_seed(53)
+        full = build_ms_tgc_spddsbn(**common)
+        torch.manual_seed(53)
+        batched = build_ms_tgc_spddsbn(**common)
+        windows = torch.randn(12, 4, 32)
+        domains = torch.tensor([0] * 6 + [1] * 6)
+        ignored_labels = torch.full((12,), -1, dtype=torch.long)
+
+        full.domainadapt_finetune(
+            windows, ignored_labels, domains, target_domains=[1]
+        )
+        seen_batches = []
+        hook = batched.temporal.register_forward_pre_hook(
+            lambda module, inputs: seen_batches.append(int(inputs[0].shape[0]))
+        )
+        batched.domainadapt_finetune_batched(
+            windows, domains, target_domains=[1], batch_size=3
+        )
+        hook.remove()
+        self.assertEqual(sum(seen_batches), len(windows))
+        self.assertLessEqual(max(seen_batches), 3)
+
+        full_state = full.state_dict()
+        batched_state = batched.state_dict()
+        test_stat_keys = [
+            key for key in full_state
+            if "running_mean_test" in key or "running_var_test" in key
+        ]
+        self.assertTrue(test_stat_keys)
+        for key in test_stat_keys:
+            self.assertTrue(torch.allclose(
+                full_state[key], batched_state[key], atol=1e-7, rtol=1e-6
+            ), msg=key)
+
     def test_sequence_chebyshev_matches_reference_layer(self):
         torch.manual_seed(5)
         reference = ChebyNetLayer(order=3, in_features=4, out_features=6)

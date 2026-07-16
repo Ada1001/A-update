@@ -143,6 +143,8 @@ def parse_args():
     parser.add_argument("--patience", type=int, default=8,
                         help="Early-stopping patience measured in epochs.")
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--refit-batch-size", type=int, default=16,
+                        help="Low-memory batch size for post-checkpoint BN-statistic refitting.")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--bnorm", choices=["spddsbn", "spdbn", "none"], default="spddsbn")
@@ -347,6 +349,7 @@ def main():
                 epochs=args.epochs,
                 patience=args.patience,
                 batch_size=args.batch_size,
+                refit_batch_size=args.refit_batch_size,
                 lr=args.lr,
                 weight_decay=args.weight_decay,
                 bnorm=args.bnorm,
@@ -465,6 +468,7 @@ def main():
                 "mstgc_time_points": res.get("mstgc_time_points", ""),
                 "mstgc_shrinkage": res.get("mstgc_shrinkage", ""),
                 "mstgc_representation": res.get("mstgc_representation", ""),
+                "refit_batch_size": res.get("refit_batch_size", ""),
             }
             results.append(row)
             history = pd.DataFrame(res["history"])
@@ -542,6 +546,7 @@ def main():
             "mstgc_kernel_samples": results[0].get("mstgc_kernel_samples", "") if args.model in MSTGC_ABLATION_MODELS else "",
             "mstgc_graph_mode": results[0].get("mstgc_graph_mode", "") if args.model in MSTGC_ABLATION_MODELS else "",
             "mstgc_representation": results[0].get("mstgc_representation", "") if args.model in MSTGC_ABLATION_MODELS else "",
+            "refit_batch_size": args.refit_batch_size,
             "svm_estimator": args.svm_estimator if args.model == "svm" else "",
             "svm_kernel": args.svm_kernel if args.model == "svm" else "",
             "svm_c": args.svm_c if args.model == "svm" else "",

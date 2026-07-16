@@ -363,9 +363,12 @@ class GraphSPDManifoldHead(nn.Module):
             return covariance.unsqueeze(1)
         return self.build_augmented_spd(maps)
 
-    def forward(self, maps, domains):
+    def manifold_features(self, maps):
         spd = self.build_spd(maps)
-        latent = self.spdnet(spd)
+        return self.spdnet(spd)
+
+    def forward(self, maps, domains):
+        latent = self.manifold_features(maps)
         if hasattr(self, "spdbnorm"):
             latent = self.spdbnorm(latent)
         if hasattr(self, "spddsbnorm"):
@@ -374,16 +377,26 @@ class GraphSPDManifoldHead(nn.Module):
             )
         return self.logeig(latent)
 
-    def refit_domains(self, maps, domains):
+    def refit_domain_features(self, latent, domains):
         if not hasattr(self, "spddsbnorm"):
             return
         import spdnets.batchnorm as bn
 
+        latent = latent.to(device=self.spd_device, dtype=torch.double)
+        domains = domains.to(device=self.spd_device, dtype=torch.long)
         self.spddsbnorm.set_test_stats_mode(bn.BatchNormTestStatsMode.REFIT)
         with torch.no_grad():
             for domain in domains.unique():
-                self.forward(maps[domains == domain], domains[domains == domain])
+                mask = domains == domain
+                self.spddsbnorm(latent[mask], domains[mask])
         self.spddsbnorm.set_test_stats_mode(bn.BatchNormTestStatsMode.BUFFER)
+
+    def refit_domains(self, maps, domains):
+        if not hasattr(self, "spddsbnorm"):
+            return
+        with torch.no_grad():
+            latent = self.manifold_features(maps)
+        self.refit_domain_features(latent, domains)
 
     def refit_global(self, maps, domains):
         if not hasattr(self, "spdbnorm"):
@@ -553,6 +566,49 @@ class MSTGCSPDDSBN(nn.Module):
                     maps, d, apply_dsbn=False
                 )
                 self.eudsbnorm.refit_domain_stats(features, d)
+        self.train(was_training)
+
+    def domainadapt_finetune_batched(self, x, d, target_domains,
+                                     batch_size=64):
+        batch_size = max(1, int(batch_size))
+        was_training = self.training
+        self.eval()
+        spd_features = []
+        euclidean_features = []
+        cpu_domains = d.detach().cpu().long()
+        with torch.no_grad():
+            for start in range(0, len(x), batch_size):
+                stop = min(start + batch_size, len(x))
+                xb = x[start:stop].to(
+                    self.graph_device, dtype=torch.float32,
+                    non_blocking=True,
+                )
+                db = cpu_domains[start:stop].to(
+                    self.graph_device, non_blocking=True
+                )
+                maps = self._weighted_graph_maps(xb)
+                if self.spd_branch is not None:
+                    spd_features.append(
+                        self.spd_branch.manifold_features(maps).detach().cpu()
+                    )
+                if self.eudsbnorm is not None:
+                    euclidean_features.append(
+                        self._first_order_readout(
+                            maps, db, apply_dsbn=False
+                        ).detach().cpu()
+                    )
+
+        if spd_features:
+            self.spd_branch.refit_domain_features(
+                torch.cat(spd_features, dim=0), cpu_domains
+            )
+        if euclidean_features:
+            features = torch.cat(euclidean_features, dim=0).to(
+                self.graph_device
+            )
+            self.eudsbnorm.refit_domain_stats(
+                features, cpu_domains.to(self.graph_device)
+            )
         self.train(was_training)
 
     def finetune(self, x, y, d):
