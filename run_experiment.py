@@ -441,6 +441,7 @@ def main():
                 "best_epoch": res["best_epoch"],
                 "best_val_loss": res["best_val_loss"],
                 "target_adapt": res["target_adapt"],
+                "target_refit_scope": res.get("target_refit_scope", "none"),
                 "artifact_z": res["artifact_z"],
                 "decision_threshold": res.get("decision_threshold", ""),
                 "train_bacc": res["train"]["balanced_accuracy"],
@@ -502,6 +503,9 @@ def main():
             "seed": args.seed,
             "target_adapt": any(bool(row["target_adapt"]) for row in results),
             "target_adapt_requested": target_adapt,
+            "target_refit_scope": ",".join(sorted(set(
+                str(row.get("target_refit_scope", "none")) for row in results
+            ))),
             "val_stat_refit": any(bool(row.get("val_stat_refit", False)) for row in results),
             "mstgc_architecture": results[0].get("mstgc_architecture", ""),
             "augment": augment,

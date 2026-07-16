@@ -76,6 +76,46 @@ def _subject_holdout_validation_split(source, meta, val_size, seed):
     return train, val
 
 
+def _validate_loso_isolation(train, val, test, meta):
+    """Fail closed if a future LOSO change mixes indices or subjects."""
+    split_indices = {
+        "train": set(int(v) for v in np.asarray(train, dtype=np.int64)),
+        "val": set(int(v) for v in np.asarray(val, dtype=np.int64)),
+        "test": set(int(v) for v in np.asarray(test, dtype=np.int64)),
+    }
+    names = list(split_indices)
+    for pos, left in enumerate(names):
+        for right in names[pos + 1:]:
+            overlap = split_indices[left].intersection(split_indices[right])
+            if overlap:
+                raise RuntimeError(
+                    "LOSO index leakage between {} and {}: {} windows".format(
+                        left, right, len(overlap)
+                    )
+                )
+
+    subjects = meta["subject"].values.astype(np.int64)
+    split_subjects = {
+        name: set(int(v) for v in np.unique(subjects[list(indices)]))
+        for name, indices in split_indices.items()
+    }
+    for pos, left in enumerate(names):
+        for right in names[pos + 1:]:
+            overlap = split_subjects[left].intersection(split_subjects[right])
+            if overlap:
+                raise RuntimeError(
+                    "LOSO subject leakage between {} and {}: {}".format(
+                        left, right, sorted(overlap)
+                    )
+                )
+    if len(split_subjects["test"]) != 1:
+        raise RuntimeError(
+            "LOSO test split must contain exactly one subject; got {}".format(
+                sorted(split_subjects["test"])
+            )
+        )
+
+
 def _cog_s1s2_to_s3_split(dataset, eval_subject, val_size):
     meta = dataset["meta"]
     subject = meta["subject"].values.astype(np.int64)
@@ -135,6 +175,7 @@ def make_split(dataset, protocol, eval_subject, seed=42, val_size=0.2,
         test = np.flatnonzero(subject == int(eval_subject))
         source = np.flatnonzero(subject != int(eval_subject))
         train, val = _subject_holdout_validation_split(source, meta, val_size, seed + 1)
+        _validate_loso_isolation(train, val, test, meta)
     else:
         raise ValueError("Unknown protocol: {}".format(protocol))
 

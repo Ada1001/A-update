@@ -953,14 +953,26 @@ def _cycle_loader(loader):
             yield batch
 
 
-def refit_batchnorm(model, x, y, domains, train_idx, test_idx, device,
+def refit_batchnorm(model, x, domains, train_idx, test_idx, device,
                     target_adapt=True, normalizer=None, batch_size=64):
+    """Refit normalization statistics without exposing target labels.
+
+    Domain-specific target adaptation receives target windows only.  The
+    source split is used only for non-domain normalization that explicitly
+    requests a source-statistics refit.
+    """
     model.eval()
     with torch.no_grad():
         has_spddsbn = hasattr(model, "spddsbnorm")
         has_eudsbn = getattr(model, "eudsbnorm", None) is not None
-        if hasattr(model, "domainadapt_finetune") and (has_spddsbn or has_eudsbn):
-            idx = np.concatenate([train_idx, test_idx]) if target_adapt else train_idx
+        has_domain_refit = (
+            hasattr(model, "domainadapt_finetune_batched")
+            or hasattr(model, "domainadapt_finetune")
+        )
+        if has_domain_refit and (has_spddsbn or has_eudsbn):
+            idx = np.asarray(
+                test_idx if target_adapt else train_idx, dtype=np.int64
+            )
             xt = x[idx]
             if normalizer is not None:
                 xt = normalizer.transform_array(xt)
@@ -985,7 +997,7 @@ def refit_batchnorm(model, x, y, domains, train_idx, test_idx, device,
                 xt = normalizer.transform_array(xt)
             model.finetune(
                 torch.from_numpy(xt).float().to(device),
-                torch.from_numpy(y[train_idx]).long(),
+                torch.full((len(train_idx),), -1, dtype=torch.long),
                 torch.from_numpy(domains[train_idx]).long().to(device),
             )
 
@@ -1046,7 +1058,14 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         raise RuntimeError("Artifact rejection removed an entire split: train={}, val={}, test={}".format(
             len(split["train"]), len(split["val"]), len(split["test"])))
     selected = np.concatenate([split["train"], split["val"], split["test"]])
-    nclasses = int(np.max(y[selected]) + 1)
+    train_labels = np.unique(y[split["train"]]).astype(np.int64)
+    if len(train_labels) == 0 or not np.array_equal(
+            train_labels, np.arange(len(train_labels), dtype=np.int64)):
+        raise RuntimeError(
+            "Source train labels must contain contiguous classes 0..K-1; got {}"
+            .format(train_labels.tolist())
+        )
+    nclasses = int(len(train_labels))
     class_labels = np.arange(nclasses, dtype=np.int64)
     if model_type == "svm":
         target_adapt = False
@@ -1438,7 +1457,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
             if val_stat_refit:
                 state_before_val_refit = copy.deepcopy(model.state_dict())
                 refit_batchnorm(
-                    model, x, y, domains, split["train"], split["val"],
+                    model, x, domains, split["train"], split["val"],
                     device, target_adapt=True, normalizer=normalizer,
                     batch_size=refit_batch_size,
                 )
@@ -1463,7 +1482,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         model.load_state_dict(best_state)
 
     if model_type == "tsmnet" or model_type in MSTGC_TARGET_ADAPT_MODEL_TYPES:
-        refit_batchnorm(model, x, y, domains, split["train"], split["test"], device,
+        refit_batchnorm(model, x, domains, split["train"], split["test"], device,
                         target_adapt=target_adapt, normalizer=normalizer,
                         batch_size=refit_batch_size)
     decision_threshold = ""
@@ -1519,6 +1538,14 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         if model_type in MSTGC_MODEL_TYPES:
             _save_mstgc_graph_state(model, dataset.get("channels", []), output_dir)
 
+    has_domain_stat_layer = (
+        hasattr(model, "spddsbnorm")
+        or getattr(model, "eudsbnorm", None) is not None
+    )
+    target_refit_scope = (
+        "target_only" if target_adapt and has_domain_stat_layer else "none"
+    )
+
     return {
         "history": history,
         "train": train_metrics,
@@ -1528,6 +1555,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         "best_epoch": int(best_epoch) if best_epoch is not None else len(history),
         "best_val_loss": float(best_loss),
         "target_adapt": bool(target_adapt),
+        "target_refit_scope": target_refit_scope,
         "n_train": int(len(split["train"])),
         "n_val": int(len(split["val"])),
         "n_test": int(len(split["test"])),
