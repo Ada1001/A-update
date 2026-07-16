@@ -441,12 +441,25 @@ class SPDBatchNormImpl(BaseBatchNorm):
 
     @torch.no_grad()
     def initrunningstats(self, X):
-        self.running_mean.data, geom_dist = functionals.spd_mean_kracher_flow(X, dim=self.batchdim, return_dist=True)
-        self.running_mean_test.data = self.running_mean.data.clone()
+        running_mean, geom_dist = functionals.spd_mean_kracher_flow(
+            X, dim=self.batchdim, return_dist=True
+        )
+        # The Karcher-flow implementation retains the reduced batch
+        # dimension.  Domain BN buffers are created without that dimension,
+        # so direct assignment changes their registered shape for domains
+        # first encountered during validation/test refitting.  Keep buffer
+        # shapes invariant so state snapshots can be restored safely.
+        running_mean = running_mean.reshape(self.running_mean.shape)
+        self.running_mean.copy_(running_mean)
+        self.running_mean_test.copy_(running_mean)
 
         if self.dispersion is BatchNormDispersion.SCALAR:
-            self.running_var = geom_dist.square().mean(dim=self.batchdim, keepdim=True).clamp(min=functionals.EPS[X.dtype])[...,None]
-            self.running_var_test = self.running_var.clone()
+            running_var = geom_dist.square().mean(
+                dim=self.batchdim, keepdim=True
+            ).clamp(min=functionals.EPS[X.dtype])[..., None]
+            running_var = running_var.reshape(self.running_var.shape)
+            self.running_var.copy_(running_var)
+            self.running_var_test.copy_(running_var)
 
     def forward(self, X):
         manifold = self.running_mean.manifold
