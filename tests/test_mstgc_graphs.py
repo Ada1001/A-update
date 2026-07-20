@@ -51,6 +51,24 @@ class MSTGCGraphTests(unittest.TestCase):
         )
         self.assertTrue(np.array_equal(first, second))
 
+    def test_correlation_graph_uses_source_train_windows_only(self):
+        first = build_mstgc_graph_adjacencies(
+            self.dataset, self.train_indices, self.normalizer,
+            graph_mode="correlation", neighbors=4,
+        )
+        changed = dict(self.dataset)
+        changed["x"] = self.dataset["x"].copy()
+        changed["x"][6:] = 1e6
+        second = build_mstgc_graph_adjacencies(
+            changed, self.train_indices, self.normalizer,
+            graph_mode="correlation", neighbors=4,
+        )
+        self.assertTrue(np.array_equal(first, second))
+        self.assertEqual(first.shape, (1, len(STEW_CHANNELS), len(STEW_CHANNELS)))
+        self.assertTrue(np.all(np.isfinite(first)))
+        self.assertTrue(np.allclose(first, first.transpose(0, 2, 1)))
+        self.assertTrue(np.allclose(np.diag(first[0]), 0.0))
+
     def test_multigraph_forward_and_backward(self):
         adjacencies = build_mstgc_graph_adjacencies(
             self.dataset, self.train_indices, self.normalizer,
@@ -304,9 +322,14 @@ class MSTGCGraphTests(unittest.TestCase):
             self.dataset, self.train_indices, self.normalizer,
             graph_mode="multigraph", neighbors=4,
         )
+        correlation = build_mstgc_graph_adjacencies(
+            self.dataset, self.train_indices, self.normalizer,
+            graph_mode="correlation", neighbors=4,
+        )
         variants = [
             ("mstgc_graph_prior", "prior", graphs[:1]),
             ("mstgc_graph_plv", "plv", graphs[1:2]),
+            ("mstgc_graph_correlation", "correlation", correlation),
             ("mstgc_graph_multigraph", "multigraph", graphs),
         ]
         windows = torch.from_numpy(
@@ -326,6 +349,61 @@ class MSTGCGraphTests(unittest.TestCase):
             with self.subTest(variant=variant):
                 self.assertEqual(model.spd_branch.augmented_dim, 9)
                 self.assertEqual(tuple(model(windows, domains).shape), (4, 2))
+
+    def test_adaptive_graph_ablation_table_contracts(self):
+        prior = build_mstgc_graph_adjacencies(
+            self.dataset, self.train_indices, self.normalizer,
+            graph_mode="prior", neighbors=4,
+        )
+        plv = build_mstgc_graph_adjacencies(
+            self.dataset, self.train_indices, self.normalizer,
+            graph_mode="plv", neighbors=4,
+        )
+        correlation = build_mstgc_graph_adjacencies(
+            self.dataset, self.train_indices, self.normalizer,
+            graph_mode="correlation", neighbors=4,
+        )
+        common = dict(
+            project_root=os.getcwd(), nchannels=len(STEW_CHANNELS),
+            nsamples=128, nclasses=2, domains=np.asarray([0, 1]),
+            temporal_hidden=4, graph_hidden=4, fusion_dim=6,
+            kernel_length=8, num_heads=2, cheby_order=2, dropout=0.0,
+            graph_time_points=16, subspacedims=3,
+            covariance_shrinkage=0.1,
+        )
+        configurations = [
+            ("G1", "mstgc_wo_cheb", "adaptive", None, False, True),
+            ("G2", "mstgc_graph_prior", "prior", prior, True, True),
+            ("G3", "mstgc_graph_plv", "plv", plv, True, True),
+            ("G4", "mstgc_graph_correlation", "correlation", correlation, True, True),
+            ("G5", "mstgc_wo_channel_attention", "adaptive", None, True, False),
+            ("G6", "ms_tgc_spddsbn", "adaptive", None, True, True),
+        ]
+        windows = torch.from_numpy(
+            self.normalizer.transform_array(self.dataset["x"][:4])
+        ).float()
+        domains = torch.tensor([0, 0, 1, 1])
+        labels = torch.tensor([0, 1, 0, 1])
+        for name, variant, mode, adjacency, has_graph, has_attention in configurations:
+            model = build_ms_tgc_spddsbn(
+                variant=variant, graph_mode=mode,
+                graph_adjacencies=adjacency, **common
+            )
+            logits = model(windows, domains)
+            torch.nn.functional.cross_entropy(logits, labels).backward()
+            with self.subTest(name=name, variant=variant):
+                self.assertEqual(tuple(logits.shape), (4, 2))
+                self.assertTrue(torch.all(torch.isfinite(logits)))
+                self.assertEqual(model.graph is not None, has_graph)
+                self.assertEqual(model.channel_score is not None, has_attention)
+                self.assertIsNotNone(model.temporal.branches[0][0].weight.grad)
+                self.assertIsNotNone(model.spd_branch.spdnet[0].W.grad)
+                if has_graph:
+                    self.assertIsNotNone(model.graph.cheby.weight.grad)
+                if mode == "adaptive" and has_graph:
+                    self.assertIsNotNone(model.graph.adj_param.grad)
+                if has_attention:
+                    self.assertIsNotNone(model.channel_score.weight.grad)
 
     def test_unlabelled_domain_refit_contract_for_spd_and_euclidean_dsbn(self):
         windows = torch.randn(4, 4, 32)

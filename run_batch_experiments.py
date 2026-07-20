@@ -14,6 +14,7 @@ MSTGC_ABLATION_MODELS = [
     "mstgc_wo_channel_attention",
     "mstgc_graph_prior",
     "mstgc_graph_plv",
+    "mstgc_graph_correlation",
     "mstgc_graph_multigraph",
     "mstgc_dta_ce",
     "mstgc_dta_cheb_ce",

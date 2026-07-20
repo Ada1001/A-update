@@ -23,6 +23,7 @@ MSTGC_MODEL_TYPES = [
     "mstgc_wo_channel_attention",
     "mstgc_graph_prior",
     "mstgc_graph_plv",
+    "mstgc_graph_correlation",
     "mstgc_graph_multigraph",
     "mstgc_dta_ce",
     "mstgc_dta_cheb_ce",
@@ -40,6 +41,7 @@ MSTGC_SPD_MODEL_TYPES = [
     "mstgc_wo_channel_attention",
     "mstgc_graph_prior",
     "mstgc_graph_plv",
+    "mstgc_graph_correlation",
     "mstgc_graph_multigraph",
     "mstgc_dta_cheb_spdmbn",
     "mstgc_dta_cheb_spdbn",
@@ -54,6 +56,7 @@ MSTGC_TARGET_ADAPT_MODEL_TYPES = [
     "mstgc_wo_channel_attention",
     "mstgc_graph_prior",
     "mstgc_graph_plv",
+    "mstgc_graph_correlation",
     "mstgc_graph_multigraph",
     "mstgc_dta_cheb_eudsbn",
     "mstgc_wo_dta",
@@ -255,6 +258,7 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
         "mstgc_wo_channel_attention": "spddsbn",
         "mstgc_graph_prior": "spddsbn",
         "mstgc_graph_plv": "spddsbn",
+        "mstgc_graph_correlation": "spddsbn",
         "mstgc_graph_multigraph": "spddsbn",
         "mstgc_dta_ce": None,
         "mstgc_dta_cheb_ce": None,
@@ -640,6 +644,41 @@ def _mstgc_source_plv_graphs(dataset, train_indices, normalizer, neighbors,
     ])
 
 
+def _mstgc_source_correlation_graph(dataset, train_indices, normalizer,
+                                    neighbors, chunk_size=64):
+    """Estimate an absolute Pearson graph from source-train windows only."""
+    indices = np.asarray(train_indices, dtype=np.int64)
+    channels = int(dataset["x"].shape[1])
+    correlation_sum = np.zeros((channels, channels), dtype=np.float64)
+    count = 0
+    for start in range(0, len(indices), int(chunk_size)):
+        chunk_idx = indices[start:start + int(chunk_size)]
+        windows = normalizer.transform_array(dataset["x"][chunk_idx]).astype(
+            np.float64, copy=False
+        )
+        centered = windows - np.mean(windows, axis=-1, keepdims=True)
+        energy = np.sqrt(np.sum(centered * centered, axis=-1))
+        denominator = energy[:, :, None] * energy[:, None, :]
+        correlation = np.einsum("nct,ndt->ncd", centered, centered)
+        correlation = np.divide(
+            correlation,
+            denominator,
+            out=np.zeros_like(correlation),
+            where=denominator > 1e-12,
+        )
+        correlation = np.abs(np.clip(correlation, -1.0, 1.0))
+        diagonal = np.arange(channels)
+        correlation[:, diagonal, diagonal] = 0.0
+        correlation_sum += np.sum(correlation, axis=0, dtype=np.float64)
+        count += len(chunk_idx)
+    if count == 0:
+        raise ValueError(
+            "Cannot estimate a correlation graph from an empty source train split"
+        )
+    mean_correlation = (correlation_sum / float(count)).astype(np.float32)
+    return _sparsify_symmetric_graph(mean_correlation, neighbors)
+
+
 def build_mstgc_graph_adjacencies(dataset, train_indices, normalizer,
                                    graph_mode, neighbors=4):
     mode = str(graph_mode)
@@ -653,6 +692,11 @@ def build_mstgc_graph_adjacencies(dataset, train_indices, normalizer,
     prior = _mstgc_spatial_prior(channels, neighbors)
     if mode == "prior":
         return prior[None, ...]
+    if mode == "correlation":
+        correlation = _mstgc_source_correlation_graph(
+            dataset, train_indices, normalizer, neighbors
+        )
+        return correlation[None, ...]
     plv_graphs = _mstgc_source_plv_graphs(
         dataset, train_indices, normalizer, neighbors
     )
@@ -1137,6 +1181,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         mstgc_graph_mode = {
             "mstgc_graph_prior": "prior",
             "mstgc_graph_plv": "plv",
+            "mstgc_graph_correlation": "correlation",
             "mstgc_graph_multigraph": "multigraph",
         }.get(model_type, "adaptive")
         graph_adjacencies = build_mstgc_graph_adjacencies(
@@ -1353,9 +1398,13 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
 
     best_state, best_loss, best_epoch, bad_epochs = None, float("inf"), None, 0
     history = []
+    has_domain_stat_layer = (
+        hasattr(model, "spddsbnorm")
+        or getattr(model, "eudsbnorm", None) is not None
+    )
     val_stat_refit = bool(
-        model_type in MSTGC_TARGET_ADAPT_MODEL_TYPES
-        and target_adapt
+        target_adapt
+        and has_domain_stat_layer
         and not set(int(v) for v in np.unique(domains[split["train"]])).intersection(
             set(int(v) for v in np.unique(domains[split["val"]]))
         )
@@ -1481,10 +1530,6 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    if model_type == "tsmnet" or model_type in MSTGC_TARGET_ADAPT_MODEL_TYPES:
-        refit_batchnorm(model, x, domains, split["train"], split["test"], device,
-                        target_adapt=target_adapt, normalizer=normalizer,
-                        batch_size=refit_batch_size)
     decision_threshold = ""
     if model_type == "bfgcn":
         train_metrics = evaluate_bfgcn(model, train_eval_loader, device)
@@ -1528,7 +1573,24 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         )
     else:
         train_metrics = evaluate(model, train_eval_loader, device)
-        val_metrics = evaluate(model, val_loader, device)
+        if val_stat_refit:
+            state_before_val_report = copy.deepcopy(model.state_dict())
+            refit_batchnorm(
+                model, x, domains, split["train"], split["val"],
+                device, target_adapt=True, normalizer=normalizer,
+                batch_size=refit_batch_size,
+            )
+            val_metrics = evaluate(model, val_loader, device)
+            model.load_state_dict(state_before_val_report)
+        else:
+            val_metrics = evaluate(model, val_loader, device)
+
+        if model_type == "tsmnet" or model_type in MSTGC_TARGET_ADAPT_MODEL_TYPES:
+            refit_batchnorm(
+                model, x, domains, split["train"], split["test"], device,
+                target_adapt=target_adapt, normalizer=normalizer,
+                batch_size=refit_batch_size,
+            )
         test_metrics = evaluate(model, test_loader, device)
 
     if output_dir:
@@ -1538,10 +1600,6 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         if model_type in MSTGC_MODEL_TYPES:
             _save_mstgc_graph_state(model, dataset.get("channels", []), output_dir)
 
-    has_domain_stat_layer = (
-        hasattr(model, "spddsbnorm")
-        or getattr(model, "eudsbnorm", None) is not None
-    )
     target_refit_scope = (
         "target_only" if target_adapt and has_domain_stat_layer else "none"
     )
