@@ -21,6 +21,8 @@ MSTGC_ABLATION_MODELS = [
     "mstgc_dta_cheb_eudsbn",
     "mstgc_dta_cheb_spdmbn",
     "mstgc_dta_cheb_spdbn",
+    "mstgc_temporal_multiscale",
+    "mstgc_temporal_dta",
     "ms_tgc_spddsbn",
     "mstgc_wo_dta",
     "mstgc_wo_cheb",

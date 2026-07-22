@@ -9,26 +9,41 @@ class SharedMultiScaleChannelTemporal(nn.Module):
     """Apply one shared multi-scale temporal encoder to every EEG channel."""
 
     def __init__(self, hidden_dim, kernel_length=16, num_heads=4,
-                 dropout=0.5, scale_factors=(1, 2, 4), output_samples=64):
+                 dropout=0.5, scale_factors=(1, 2, 4), output_samples=64,
+                 fusion_mode="dta_gate"):
         super().__init__()
         self.hidden_dim = int(hidden_dim)
         self.output_samples = int(output_samples)
+        self.fusion_mode = str(fusion_mode)
+        if self.fusion_mode not in ["mean", "dta", "dta_gate"]:
+            raise ValueError(
+                "Multi-scale temporal fusion must be mean, dta, or dta_gate"
+            )
         self.branches = nn.ModuleList()
+        self.kernel_sizes = []
         for scale in scale_factors:
             kernel = max(3, int(kernel_length) // int(scale))
             if kernel % 2 == 0:
                 kernel += 1
+            self.kernel_sizes.append(kernel)
             self.branches.append(nn.Sequential(
                 nn.Conv1d(1, self.hidden_dim, kernel_size=kernel,
                           padding=kernel // 2, bias=False),
                 nn.BatchNorm1d(self.hidden_dim),
                 nn.GELU(),
             ))
-        self.scale_attention = DynamicTemporalAttention(
-            self.hidden_dim, num_heads=num_heads
+        self.scale_attention = (
+            DynamicTemporalAttention(self.hidden_dim, num_heads=num_heads)
+            if self.fusion_mode in ["dta", "dta_gate"] else None
         )
-        self.context_gate = ContextualGateLayer(self.hidden_dim)
-        self.scale_score = nn.Linear(self.hidden_dim, 1)
+        self.context_gate = (
+            ContextualGateLayer(self.hidden_dim)
+            if self.fusion_mode == "dta_gate" else None
+        )
+        self.scale_score = (
+            nn.Linear(self.hidden_dim, 1)
+            if self.fusion_mode in ["dta", "dta_gate"] else None
+        )
         self.output_norm = nn.LayerNorm(self.hidden_dim)
         self.dropout = nn.Dropout(float(dropout))
 
@@ -38,10 +53,17 @@ class SharedMultiScaleChannelTemporal(nn.Module):
         maps = torch.stack(
             [branch(channel_signals) for branch in self.branches], dim=1
         )
-        scale_tokens = torch.mean(maps, dim=-1)
-        attended = self.scale_attention(scale_tokens)
-        attended, _ = self.context_gate(attended)
-        scale_weights = torch.softmax(self.scale_score(attended), dim=1)
+        if self.fusion_mode == "mean":
+            scale_weights = maps.new_full(
+                (maps.shape[0], maps.shape[1], 1),
+                1.0 / float(maps.shape[1]),
+            )
+        else:
+            scale_tokens = torch.mean(maps, dim=-1)
+            attended = self.scale_attention(scale_tokens)
+            if self.context_gate is not None:
+                attended, _ = self.context_gate(attended)
+            scale_weights = torch.softmax(self.scale_score(attended), dim=1)
         fused = torch.sum(maps * scale_weights.unsqueeze(-1), dim=1)
         if self.output_samples > 0 and fused.shape[-1] != self.output_samples:
             fused = F.adaptive_avg_pool1d(fused, self.output_samples)
@@ -62,6 +84,8 @@ class SharedSingleScaleChannelTemporal(nn.Module):
             kernel += 1
         self.hidden_dim = int(hidden_dim)
         self.output_samples = int(output_samples)
+        self.fusion_mode = "single"
+        self.kernel_sizes = [kernel]
         self.encoder = nn.Sequential(
             nn.Conv1d(1, self.hidden_dim, kernel_size=kernel,
                       padding=kernel // 2, bias=False),
@@ -419,7 +443,7 @@ class MSTGCSPDDSBN(nn.Module):
                  euclidean_dsbn=False, domains=None, graph_mode="adaptive",
                  graph_adjacencies=None, graph_neighbors=4,
                  graph_time_points=64, channel_weight_epsilon=1e-6,
-                 use_channel_attention=True):
+                 use_channel_attention=True, temporal_mode=None):
         super().__init__()
         self.spd_branch = spd_branch
         self.representation = (
@@ -427,7 +451,16 @@ class MSTGCSPDDSBN(nn.Module):
             if spd_branch is not None else "mean"
         )
         self.use_spd = spd_branch is not None
-        self.use_dta = bool(use_dta)
+        self.temporal_mode = (
+            str(temporal_mode)
+            if temporal_mode is not None
+            else ("dta_gate" if bool(use_dta) else "single")
+        )
+        if self.temporal_mode not in ["single", "mean", "dta", "dta_gate"]:
+            raise ValueError(
+                "Temporal mode must be single, mean, dta, or dta_gate"
+            )
+        self.use_dta = self.temporal_mode in ["dta", "dta_gate"]
         self.use_cheb = bool(use_cheb)
         self.use_euclidean_dsbn = bool(euclidean_dsbn)
         self.graph_mode = str(graph_mode)
@@ -443,11 +476,12 @@ class MSTGCSPDDSBN(nn.Module):
                 "channel count ({}), got {}".format(nchannels, graph_nodes)
             )
 
-        if self.use_dta:
+        if self.temporal_mode != "single":
             self.temporal = SharedMultiScaleChannelTemporal(
                 hidden_dim=temporal_hidden, kernel_length=kernel_length,
                 num_heads=num_heads, dropout=dropout,
                 output_samples=graph_time_points,
+                fusion_mode=self.temporal_mode,
             )
         else:
             self.temporal = SharedSingleScaleChannelTemporal(

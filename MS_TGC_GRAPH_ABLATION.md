@@ -137,6 +137,31 @@ first-order mean embedding differs.
 
 ## Module ablation after the augmented-SPD redesign
 
+### Temporal modeling ablation
+
+The temporal table is a cumulative, single-variable comparison. Every row
+keeps the adaptive Chebyshev graph, channel reliability weighting, augmented
+SPD representation, SPDDSBN, optimizer, split, and loss unchanged.
+
+| ID | Model | Temporal implementation |
+|---|---|---|
+| T1 | `mstgc_wo_dta` | one shared channel-wise temporal convolution |
+| T2 | `mstgc_temporal_multiscale` | three shared scales with fixed equal averaging |
+| T3 | `mstgc_temporal_dta` | three scales with DTA-learned scale weights |
+| T4 | `ms_tgc_spddsbn` | three scales with DTA and contextual gating |
+
+At the 128 Hz reference rate, the default branch kernels are 17, 9, and 5
+samples. Dataset-aware scaling preserves approximately comparable temporal
+receptive fields, so 250 Hz runs use 31, 15, and 7 samples. T1 uses only the
+largest branch (17 or 31). `summary.csv` and `master_summary.csv` record
+`mstgc_temporal_mode`, `mstgc_temporal_kernels`, and `model_parameters`.
+
+T1 versus T2 measures the benefit of multiple receptive fields but also adds
+parameters. T2 versus T3 is the clean test of learned scale attention over the
+same convolution branches, and T3 versus T4 isolates contextual gating. Report
+parameter counts and paired per-subject results; do not describe T1 versus T2
+alone as proof that gains are unrelated to model capacity.
+
 The required primary module set is now:
 
 | Model | Removed or replaced component |
@@ -166,6 +191,12 @@ Each subject directory stores `graph_state.npz` beside `model.pt`. It contains:
 The graph mode is also recorded in `summary.csv` and `master_summary.csv`.
 
 ## Commands
+
+Run the four temporal groups on all applicable dataset/protocol combinations:
+
+```powershell
+python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models mstgc_wo_dta,mstgc_temporal_multiscale,mstgc_temporal_dta,ms_tgc_spddsbn --epochs 30 --batch-size 64
+```
 
 Run the four graph groups on all applicable dataset/protocol combinations:
 

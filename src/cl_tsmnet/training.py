@@ -30,6 +30,8 @@ MSTGC_MODEL_TYPES = [
     "mstgc_dta_cheb_eudsbn",
     "mstgc_dta_cheb_spdmbn",
     "mstgc_dta_cheb_spdbn",
+    "mstgc_temporal_multiscale",
+    "mstgc_temporal_dta",
     "mstgc_wo_dta",
     "mstgc_wo_cheb",
     "mstgc_wo_spddsbn",
@@ -45,6 +47,8 @@ MSTGC_SPD_MODEL_TYPES = [
     "mstgc_graph_multigraph",
     "mstgc_dta_cheb_spdmbn",
     "mstgc_dta_cheb_spdbn",
+    "mstgc_temporal_multiscale",
+    "mstgc_temporal_dta",
     "mstgc_wo_dta",
     "mstgc_wo_cheb",
     "mstgc_wo_spddsbn",
@@ -59,6 +63,8 @@ MSTGC_TARGET_ADAPT_MODEL_TYPES = [
     "mstgc_graph_correlation",
     "mstgc_graph_multigraph",
     "mstgc_dta_cheb_eudsbn",
+    "mstgc_temporal_multiscale",
+    "mstgc_temporal_dta",
     "mstgc_wo_dta",
     "mstgc_wo_cheb",
 ]
@@ -265,6 +271,8 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
         "mstgc_dta_cheb_eudsbn": None,
         "mstgc_dta_cheb_spdmbn": "spdbn",
         "mstgc_dta_cheb_spdbn": "spdbn",
+        "mstgc_temporal_multiscale": "spddsbn",
+        "mstgc_temporal_dta": "spddsbn",
         "mstgc_wo_dta": "spddsbn",
         "mstgc_wo_cheb": "spddsbn",
         "mstgc_wo_spddsbn": None,
@@ -297,6 +305,11 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
             representation=spd_representation,
         )
     spd_dim = int(subspacedims) * (int(subspacedims) + 1) // 2
+    temporal_mode = {
+        "mstgc_wo_dta": "single",
+        "mstgc_temporal_multiscale": "mean",
+        "mstgc_temporal_dta": "dta",
+    }.get(variant, "dta_gate")
     return MSTGCSPDDSBN(
         spd_branch=spd_branch,
         spd_latent_dim=spd_dim,
@@ -310,7 +323,7 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
         cheby_order=cheby_order,
         dropout=dropout,
         num_nodes=num_nodes,
-        use_dta=(variant != "mstgc_wo_dta"),
+        use_dta=(temporal_mode != "single"),
         use_cheb=use_cheb,
         euclidean_dsbn=(variant == "mstgc_dta_cheb_eudsbn"),
         domains=domains,
@@ -319,6 +332,7 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
         graph_neighbors=graph_neighbors,
         graph_time_points=graph_time_points,
         use_channel_attention=(variant != "mstgc_wo_channel_attention"),
+        temporal_mode=temporal_mode,
     )
 
 
@@ -1632,6 +1646,15 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
             int(mstgc_kernel_samples)
             if model_type in MSTGC_MODEL_TYPES else ""
         ),
+        "mstgc_temporal_mode": (
+            getattr(model, "temporal_mode", "")
+            if model_type in MSTGC_MODEL_TYPES else ""
+        ),
+        "mstgc_temporal_kernels": (
+            ",".join(str(value) for value in getattr(model.temporal, "kernel_sizes", []))
+            if model_type in MSTGC_MODEL_TYPES else ""
+        ),
+        "model_parameters": int(sum(parameter.numel() for parameter in model.parameters())),
         "mstgc_time_points": (
             int(mstgc_time_points) if model_type in MSTGC_MODEL_TYPES else ""
         ),

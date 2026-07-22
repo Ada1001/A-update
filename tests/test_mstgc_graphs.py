@@ -194,6 +194,7 @@ class MSTGCGraphTests(unittest.TestCase):
             "mstgc_dta_ce", "mstgc_dta_cheb_ce",
             "mstgc_dta_cheb_eudsbn", "mstgc_dta_cheb_spdmbn",
             "mstgc_dta_cheb_spdbn", "ms_tgc_spddsbn",
+            "mstgc_temporal_multiscale", "mstgc_temporal_dta",
             "mstgc_wo_dta", "mstgc_wo_cheb", "mstgc_wo_spddsbn",
         ]
         windows = torch.randn(4, 4, 32)
@@ -209,6 +210,60 @@ class MSTGCGraphTests(unittest.TestCase):
             )
             with self.subTest(variant=variant):
                 self.assertEqual(tuple(model(windows, domains).shape), (4, 3))
+
+    def test_temporal_ablation_table_has_distinct_trainable_contracts(self):
+        common = dict(
+            project_root=os.getcwd(), nchannels=4, nsamples=128, nclasses=2,
+            domains=np.asarray([0, 1]), temporal_hidden=8, graph_hidden=8,
+            fusion_dim=12, kernel_length=16, num_heads=2, cheby_order=2,
+            dropout=0.0, graph_time_points=16, subspacedims=4,
+            covariance_shrinkage=0.1,
+        )
+        specifications = [
+            ("mstgc_wo_dta", "single", [17]),
+            ("mstgc_temporal_multiscale", "mean", [17, 9, 5]),
+            ("mstgc_temporal_dta", "dta", [17, 9, 5]),
+            ("ms_tgc_spddsbn", "dta_gate", [17, 9, 5]),
+        ]
+        windows = torch.randn(4, 4, 128)
+        domains = torch.tensor([0, 0, 1, 1])
+        labels = torch.tensor([0, 1, 0, 1])
+        parameter_counts = []
+
+        for variant, expected_mode, expected_kernels in specifications:
+            model = build_ms_tgc_spddsbn(variant=variant, **common)
+            maps, weights = model.temporal(windows)
+            logits = model(windows, domains)
+            torch.nn.functional.cross_entropy(logits, labels).backward()
+            parameter_counts.append(sum(p.numel() for p in model.parameters()))
+            with self.subTest(variant=variant):
+                self.assertEqual(model.temporal_mode, expected_mode)
+                self.assertEqual(model.temporal.kernel_sizes, expected_kernels)
+                self.assertEqual(tuple(maps.shape), (4, 4, 8, 16))
+                self.assertEqual(tuple(logits.shape), (4, 2))
+                self.assertTrue(torch.all(torch.isfinite(logits)))
+                self.assertIsNotNone(model.graph.cheby.weight.grad)
+                self.assertIsNotNone(model.spd_branch.spdnet[0].W.grad)
+                if expected_mode == "single":
+                    self.assertIsNone(weights)
+                    self.assertIsNotNone(model.temporal.encoder[0].weight.grad)
+                else:
+                    self.assertEqual(tuple(weights.shape), (4 * 4, 3, 1))
+                    self.assertIsNotNone(model.temporal.branches[0][0].weight.grad)
+                    self.assertEqual(
+                        model.temporal.scale_attention is not None,
+                        expected_mode in ["dta", "dta_gate"],
+                    )
+                    self.assertEqual(
+                        model.temporal.context_gate is not None,
+                        expected_mode == "dta_gate",
+                    )
+                    if expected_mode == "mean":
+                        self.assertTrue(torch.allclose(
+                            weights, torch.full_like(weights, 1.0 / 3.0)
+                        ))
+
+        self.assertEqual(parameter_counts, sorted(parameter_counts))
 
     def test_without_channel_attention_uses_fixed_uniform_reliability(self):
         model = build_ms_tgc_spddsbn(
@@ -411,7 +466,8 @@ class MSTGCGraphTests(unittest.TestCase):
         labels_are_ignored = torch.tensor([0, 1, 0, 1])
         for variant in [
                 "ms_tgc_spddsbn", "mstgc_cov_spddsbn",
-                "mstgc_augspd_spddsbn", "mstgc_dta_cheb_eudsbn"]:
+                "mstgc_augspd_spddsbn", "mstgc_dta_cheb_eudsbn",
+                "mstgc_temporal_multiscale", "mstgc_temporal_dta"]:
             model = build_ms_tgc_spddsbn(
                 os.getcwd(), nchannels=4, nsamples=32, nclasses=2,
                 domains=np.asarray([0, 1]), temporal_hidden=4,
