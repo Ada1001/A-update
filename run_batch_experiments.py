@@ -99,6 +99,11 @@ def parse_args():
     parser.add_argument("--mstgc-kernel-length", type=int, default=16)
     parser.add_argument("--mstgc-num-heads", type=int, default=4)
     parser.add_argument("--mstgc-cheby-order", type=int, default=3)
+    parser.add_argument(
+        "--mstgc-cheby-orders", default=None,
+        help="Optional comma-separated Chebyshev sensitivity values. Each "
+             "value is run with an isolated model name/output directory.",
+    )
     parser.add_argument("--mstgc-dropout", type=float, default=0.5)
     parser.add_argument("--mstgc-num-nodes", type=int, default=0)
     parser.add_argument("--mstgc-graph-k", type=int, default=4)
@@ -142,6 +147,27 @@ def main():
     protocols = _split_csv(args.protocols)
     models = _split_csv(args.models)
     cog_paradigms = _split_csv(args.cog_paradigms)
+    cheby_orders = None
+    if args.mstgc_cheby_orders is not None:
+        try:
+            cheby_orders = [
+                int(value) for value in _split_csv(args.mstgc_cheby_orders)
+            ]
+        except ValueError:
+            raise ValueError("--mstgc-cheby-orders must contain integers")
+        cheby_orders = list(dict.fromkeys(cheby_orders))
+        if not cheby_orders or any(order < 1 for order in cheby_orders):
+            raise ValueError(
+                "--mstgc-cheby-orders must contain positive integers"
+            )
+        unsupported = [
+            model for model in models if model not in MSTGC_ABLATION_MODELS
+        ]
+        if unsupported:
+            raise ValueError(
+                "Chebyshev sensitivity is only defined for MS-TGC models; "
+                "unsupported: {}".format(",".join(unsupported))
+            )
 
     commands = []
     for dataset in datasets:
@@ -289,6 +315,20 @@ def main():
                     if args.no_target_adapt:
                         cmd.append("--no-target-adapt")
                     commands.append(cmd)
+
+    if cheby_orders is not None:
+        sensitivity_commands = []
+        for cmd in commands:
+            order_index = cmd.index("--mstgc-cheby-order") + 1
+            model = cmd[cmd.index("--model") + 1]
+            for order in cheby_orders:
+                sensitivity_cmd = list(cmd)
+                sensitivity_cmd[order_index] = str(order)
+                sensitivity_cmd.extend([
+                    "--model-name", "{}_chebk{}".format(model, order)
+                ])
+                sensitivity_commands.append(sensitivity_cmd)
+        commands = sensitivity_commands
 
     for cmd in commands:
         print(" ".join(cmd), flush=True)

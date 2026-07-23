@@ -477,6 +477,10 @@ def main():
                 "mstgc_temporal_mode": res.get("mstgc_temporal_mode", ""),
                 "mstgc_temporal_kernels": res.get("mstgc_temporal_kernels", ""),
                 "model_parameters": res.get("model_parameters", ""),
+                "mstgc_cheby_order": (
+                    args.mstgc_cheby_order
+                    if args.model in MSTGC_ABLATION_MODELS else ""
+                ),
                 "mstgc_time_points": res.get("mstgc_time_points", ""),
                 "mstgc_shrinkage": res.get("mstgc_shrinkage", ""),
                 "mstgc_representation": res.get("mstgc_representation", ""),

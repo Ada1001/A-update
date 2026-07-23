@@ -190,6 +190,25 @@ Each subject directory stores `graph_state.npz` beside `model.pt`. It contains:
 
 The graph mode is also recorded in `summary.csv` and `master_summary.csv`.
 
+## Chebyshev order sensitivity
+
+The full `ms_tgc_spddsbn` model is evaluated at K=1, 2, 3, and 4 while every
+other architecture, split, seed, optimizer, graph source, SPD representation,
+and adaptation setting remains fixed. In this implementation K is the number
+of Chebyshev terms: K=1 contains only T0, K=2 adds one-hop T1 propagation, K=3
+is the prespecified full-model default, and K=4 adds T3. This definition is
+kept unchanged so the K=3 sensitivity row is exactly the existing main
+architecture rather than a redefined model.
+
+The batch runner's `--mstgc-cheby-orders` option creates isolated result names
+`ms_tgc_spddsbn_chebk1` through `ms_tgc_spddsbn_chebk4`. It does not overwrite
+the original `ms_tgc_spddsbn` output. Both per-subject and master summaries
+record `mstgc_cheby_order`.
+
+```powershell
+python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models ms_tgc_spddsbn --mstgc-cheby-orders 1,2,3,4 --epochs 30 --batch-size 64
+```
+
 ## Commands
 
 Run the four temporal groups on all applicable dataset/protocol combinations:

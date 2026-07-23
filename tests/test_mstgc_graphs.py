@@ -547,6 +547,31 @@ class MSTGCGraphTests(unittest.TestCase):
         expected = expected.reshape(2, 7, 5, 6).permute(0, 2, 3, 1)
         self.assertTrue(torch.allclose(actual, expected, atol=1e-6))
 
+    def test_chebyshev_order_sensitivity_builds_distinct_valid_models(self):
+        windows = torch.randn(4, 4, 32)
+        domains = torch.tensor([0, 0, 1, 1])
+        labels = torch.tensor([0, 1, 0, 1])
+        parameter_counts = []
+        for order in [1, 2, 3, 4]:
+            model = build_ms_tgc_spddsbn(
+                os.getcwd(), nchannels=4, nsamples=32, nclasses=2,
+                domains=np.asarray([0, 1]), temporal_hidden=4,
+                graph_hidden=4, fusion_dim=6, kernel_length=4,
+                num_heads=2, cheby_order=order, dropout=0.0,
+                graph_time_points=8, subspacedims=3,
+                covariance_shrinkage=0.1, variant="ms_tgc_spddsbn",
+            )
+            logits = model(windows, domains)
+            torch.nn.functional.cross_entropy(logits, labels).backward()
+            with self.subTest(order=order):
+                self.assertEqual(model.graph.cheby.order, order)
+                self.assertEqual(model.graph.cheby.weight.shape[0], order)
+                self.assertEqual(tuple(logits.shape), (4, 2))
+                self.assertTrue(torch.all(torch.isfinite(logits)))
+                self.assertIsNotNone(model.graph.cheby.weight.grad)
+            parameter_counts.append(sum(p.numel() for p in model.parameters()))
+        self.assertEqual(parameter_counts, sorted(parameter_counts))
+
 
 if __name__ == "__main__":
     unittest.main()
