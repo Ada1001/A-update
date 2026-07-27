@@ -107,6 +107,10 @@ def parse_args():
     parser.add_argument("--mstgc-dropout", type=float, default=0.5)
     parser.add_argument("--mstgc-num-nodes", type=int, default=0)
     parser.add_argument("--mstgc-graph-k", type=int, default=4)
+    parser.add_argument(
+        "--mstgc-graph-densities", default=None,
+        help="Optional comma-separated adaptive-graph density sensitivity values.",
+    )
     parser.add_argument("--mstgc-time-points", type=int, default=64)
     parser.add_argument("--mstgc-shrinkage", type=float, default=0.1)
     parser.add_argument("--svm-estimator", default="linear-svc",
@@ -167,6 +171,34 @@ def main():
             raise ValueError(
                 "Chebyshev sensitivity is only defined for MS-TGC models; "
                 "unsupported: {}".format(",".join(unsupported))
+            )
+    graph_densities = None
+    if args.mstgc_graph_densities is not None:
+        try:
+            graph_densities = [
+                float(value) for value in _split_csv(args.mstgc_graph_densities)
+            ]
+        except ValueError:
+            raise ValueError("--mstgc-graph-densities must contain numbers")
+        graph_densities = list(dict.fromkeys(graph_densities))
+        if (not graph_densities
+                or any(not 0.0 < density <= 1.0 for density in graph_densities)):
+            raise ValueError(
+                "--mstgc-graph-densities must contain values in (0, 1]"
+            )
+        if models != ["ms_tgc_spddsbn"]:
+            raise ValueError(
+                "Graph-density sensitivity must use only "
+                "--models ms_tgc_spddsbn"
+            )
+        if cheby_orders is not None:
+            raise ValueError(
+                "Run Chebyshev-order and graph-density sensitivities separately"
+            )
+        density_labels = [int(round(100.0 * value)) for value in graph_densities]
+        if len(set(density_labels)) != len(density_labels):
+            raise ValueError(
+                "Graph densities must map to distinct percentage output names"
             )
 
     commands = []
@@ -326,6 +358,20 @@ def main():
                 sensitivity_cmd[order_index] = str(order)
                 sensitivity_cmd.extend([
                     "--model-name", "{}_chebk{}".format(model, order)
+                ])
+                sensitivity_commands.append(sensitivity_cmd)
+        commands = sensitivity_commands
+    elif graph_densities is not None:
+        sensitivity_commands = []
+        for cmd in commands:
+            model = cmd[cmd.index("--model") + 1]
+            for density in graph_densities:
+                sensitivity_cmd = list(cmd)
+                density_percent = int(round(100.0 * density))
+                sensitivity_cmd.extend([
+                    "--mstgc-graph-density", str(density),
+                    "--model-name",
+                    "{}_graphd{}".format(model, density_percent),
                 ])
                 sensitivity_commands.append(sensitivity_cmd)
         commands = sensitivity_commands

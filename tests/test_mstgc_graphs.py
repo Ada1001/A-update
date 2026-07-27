@@ -572,6 +572,52 @@ class MSTGCGraphTests(unittest.TestCase):
             parameter_counts.append(sum(p.numel() for p in model.parameters()))
         self.assertEqual(parameter_counts, sorted(parameter_counts))
 
+    def test_adaptive_graph_density_sensitivity_keeps_exact_edge_counts(self):
+        possible_edges = 14 * 13 // 2
+        windows = torch.randn(4, 14, 32)
+        domains = torch.tensor([0, 0, 1, 1])
+        labels = torch.tensor([0, 1, 0, 1])
+        for density in [0.10, 0.25, 0.50, 0.75, 1.00]:
+            model = build_ms_tgc_spddsbn(
+                os.getcwd(), nchannels=14, nsamples=32, nclasses=2,
+                domains=np.asarray([0, 1]), temporal_hidden=4,
+                graph_hidden=4, fusion_dim=6, kernel_length=4,
+                num_heads=2, cheby_order=3, dropout=0.0,
+                graph_neighbors=4, graph_density=density,
+                graph_time_points=8, subspacedims=3,
+                covariance_shrinkage=0.1, variant="ms_tgc_spddsbn",
+            )
+            adjacency = model.graph._adjacencies()[0]
+            actual_edges = int(torch.count_nonzero(
+                torch.triu(adjacency, diagonal=1)
+            ).item())
+            expected_edges = max(1, int(round(density * possible_edges)))
+            logits = model(windows, domains)
+            torch.nn.functional.cross_entropy(logits, labels).backward()
+            with self.subTest(density=density):
+                self.assertEqual(model.graph.density, density)
+                self.assertEqual(actual_edges, expected_edges)
+                self.assertTrue(torch.allclose(adjacency, adjacency.t()))
+                self.assertTrue(torch.allclose(
+                    torch.diagonal(adjacency), torch.zeros(14)
+                ))
+                self.assertEqual(tuple(logits.shape), (4, 2))
+                self.assertIsNotNone(model.graph.adj_param.grad)
+
+    def test_legacy_topk_graph_remains_the_default(self):
+        model = build_ms_tgc_spddsbn(
+            os.getcwd(), nchannels=14, nsamples=32, nclasses=2,
+            domains=np.asarray([0, 1]), temporal_hidden=4,
+            graph_hidden=4, fusion_dim=6, kernel_length=4,
+            num_heads=2, cheby_order=3, dropout=0.0,
+            graph_neighbors=4, graph_time_points=8, subspacedims=3,
+            covariance_shrinkage=0.1, variant="ms_tgc_spddsbn",
+        )
+        adjacency = model.graph._adjacencies()[0]
+        degrees = torch.count_nonzero(adjacency, dim=1)
+        self.assertIsNone(model.graph.density)
+        self.assertTrue(torch.all(degrees >= 4))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -140,11 +140,20 @@ class ChebyGraphFeatureEncoder(nn.Module):
 
     def __init__(self, num_nodes, feature_dim, out_dim=None, order=3,
                  dropout=0.5, graph_mode="adaptive", adjacencies=None,
-                 neighbors=4):
+                 neighbors=4, density=None):
         super().__init__()
         self.num_nodes = int(num_nodes)
         self.graph_mode = str(graph_mode)
         self.neighbors = min(max(1, int(neighbors)), max(1, self.num_nodes - 1))
+        self.density = None if density is None else float(density)
+        if self.density is not None:
+            if not 0.0 < self.density <= 1.0:
+                raise ValueError("Graph density must be in (0, 1]")
+            if self.graph_mode != "adaptive":
+                raise ValueError(
+                    "Graph-density sensitivity is only defined for the "
+                    "adaptive graph"
+                )
         self.cheby = ChebyGraphSequenceLayer(
             order, feature_dim, int(out_dim or feature_dim)
         )
@@ -176,9 +185,27 @@ class ChebyGraphFeatureEncoder(nn.Module):
         if self.graph_mode == "adaptive":
             adj = F.softplus(self.adj_param + self.adj_param.t())
             adj = adj - torch.diag_embed(torch.diagonal(adj))
-            _, indices = torch.topk(adj, self.neighbors, dim=1)
-            mask = torch.zeros_like(adj).scatter_(1, indices, 1.0)
-            mask = torch.maximum(mask, mask.t())
+            if self.density is None:
+                _, indices = torch.topk(adj, self.neighbors, dim=1)
+                mask = torch.zeros_like(adj).scatter_(1, indices, 1.0)
+                mask = torch.maximum(mask, mask.t())
+            else:
+                upper = torch.triu_indices(
+                    self.num_nodes, self.num_nodes, offset=1,
+                    device=adj.device,
+                )
+                possible_edges = int(upper.shape[1])
+                keep_edges = min(
+                    possible_edges,
+                    max(1, int(round(self.density * possible_edges))),
+                )
+                edge_scores = adj[upper[0], upper[1]]
+                _, selected = torch.topk(edge_scores, keep_edges)
+                rows = upper[0, selected]
+                cols = upper[1, selected]
+                mask = torch.zeros_like(adj)
+                mask[rows, cols] = 1.0
+                mask[cols, rows] = 1.0
             return (adj * mask).unsqueeze(0)
         return torch.clamp(self.fixed_adjacencies, min=0.0)
 
@@ -442,6 +469,7 @@ class MSTGCSPDDSBN(nn.Module):
                  num_nodes=0, use_dta=True, use_cheb=True,
                  euclidean_dsbn=False, domains=None, graph_mode="adaptive",
                  graph_adjacencies=None, graph_neighbors=4,
+                 graph_density=None,
                  graph_time_points=64, channel_weight_epsilon=1e-6,
                  use_channel_attention=True, temporal_mode=None):
         super().__init__()
@@ -494,7 +522,7 @@ class MSTGCSPDDSBN(nn.Module):
                 num_nodes=graph_nodes, feature_dim=temporal_hidden,
                 out_dim=graph_hidden, order=cheby_order, dropout=dropout,
                 graph_mode=self.graph_mode, adjacencies=graph_adjacencies,
-                neighbors=graph_neighbors,
+                neighbors=graph_neighbors, density=graph_density,
             )
             feature_dim = int(graph_hidden)
         else:

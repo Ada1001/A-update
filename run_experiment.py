@@ -205,6 +205,11 @@ def parse_args():
                         help="Cheby graph nodes for MS_TGC_SPDDSBN. 0 means use EEG channel count.")
     parser.add_argument("--mstgc-graph-k", type=int, default=4,
                         help="Neighbors retained in adaptive, prior, and PLV MS-TGC graphs.")
+    parser.add_argument(
+        "--mstgc-graph-density", type=float, default=None,
+        help="Optional global undirected adaptive-graph edge density in (0,1]. "
+             "Overrides top-k only when explicitly supplied.",
+    )
     parser.add_argument("--mstgc-time-points", type=int, default=64,
                         help="Temporal points retained before MS-TGC graph propagation and SPD covariance.")
     parser.add_argument("--mstgc-shrinkage", type=float, default=0.1,
@@ -421,6 +426,7 @@ def main():
                 mstgc_dropout=args.mstgc_dropout,
                 mstgc_num_nodes=args.mstgc_num_nodes,
                 mstgc_graph_k=args.mstgc_graph_k,
+                mstgc_graph_density=args.mstgc_graph_density,
                 mstgc_time_points=args.mstgc_time_points,
                 mstgc_shrinkage=args.mstgc_shrinkage,
                 recurrent_hidden=args.recurrent_hidden,
@@ -471,6 +477,10 @@ def main():
                 "test_size": args.test_size if args.protocol == "single_session" else "",
                 "split_issues": "; ".join(split_issues),
                 "mstgc_graph_mode": res.get("mstgc_graph_mode", ""),
+                "mstgc_graph_density": res.get("mstgc_graph_density", ""),
+                "mstgc_graph_actual_density": res.get(
+                    "mstgc_graph_actual_density", ""
+                ),
                 "val_stat_refit": res.get("val_stat_refit", False),
                 "mstgc_architecture": res.get("mstgc_architecture", ""),
                 "mstgc_kernel_samples": res.get("mstgc_kernel_samples", ""),
@@ -560,6 +570,17 @@ def main():
             "mstgc_dropout": args.mstgc_dropout if args.model in MSTGC_ABLATION_MODELS else "",
             "mstgc_num_nodes": args.mstgc_num_nodes if args.model in MSTGC_ABLATION_MODELS else "",
             "mstgc_graph_k": args.mstgc_graph_k if args.model in MSTGC_ABLATION_MODELS else "",
+            "mstgc_graph_density": results[0].get("mstgc_graph_density", "") if args.model in MSTGC_ABLATION_MODELS else "",
+            "mstgc_graph_actual_density_mean": (
+                float(np.mean([
+                    float(row["mstgc_graph_actual_density"])
+                    for row in results
+                    if row.get("mstgc_graph_actual_density", "") != ""
+                ]))
+                if args.model in MSTGC_ABLATION_MODELS
+                and any(row.get("mstgc_graph_actual_density", "") != "" for row in results)
+                else ""
+            ),
             "mstgc_time_points": args.mstgc_time_points if args.model in MSTGC_ABLATION_MODELS else "",
             "mstgc_shrinkage": args.mstgc_shrinkage if args.model in MSTGC_ABLATION_MODELS else "",
             "mstgc_kernel_samples": results[0].get("mstgc_kernel_samples", "") if args.model in MSTGC_ABLATION_MODELS else "",

@@ -209,6 +209,34 @@ record `mstgc_cheby_order`.
 python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models ms_tgc_spddsbn --mstgc-cheby-orders 1,2,3,4 --epochs 30 --batch-size 64
 ```
 
+## Adaptive graph sparsity sensitivity
+
+The existing full model uses a per-node top-k adaptive graph controlled by
+`--mstgc-graph-k` (default 4). Because the three datasets have different
+channel counts and the row-wise masks are symmetrized by union, that setting
+does not correspond to one common edge percentage. The controlled sensitivity
+mode therefore ranks the upper-triangular adaptive edge scores globally and
+retains the nearest feasible number of undirected edges.
+
+| ID | Target density | Batch model name |
+|---|---:|---|
+| S1 | 10% | `ms_tgc_spddsbn_graphd10` |
+| S2 | 25% | `ms_tgc_spddsbn_graphd25` |
+| S3 | 50% | `ms_tgc_spddsbn_graphd50` |
+| S4 | 75% | `ms_tgc_spddsbn_graphd75` |
+| S5 | 100% | `ms_tgc_spddsbn_graphd100` |
+
+Only the adaptive adjacency mask changes. Temporal extraction, Chebyshev
+order K=3, channel attention, augmented SPD representation, SPDDSBN, split,
+seed, optimizer, and target-adaptation policy remain fixed. Since edge counts
+are discrete, result files record both `mstgc_graph_density` and
+`mstgc_graph_actual_density`. Each run receives an isolated output name, so the
+default top-k main model and previous ablations are not overwritten.
+
+```powershell
+python run_batch_experiments.py --datasets stew,eegmat,cog-bci --protocols single_session,loso,cog_multi_session --models ms_tgc_spddsbn --mstgc-graph-densities 0.10,0.25,0.50,0.75,1.00 --epochs 30 --batch-size 64
+```
+
 ## Commands
 
 Run the four temporal groups on all applicable dataset/protocol combinations:

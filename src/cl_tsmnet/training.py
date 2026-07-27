@@ -242,6 +242,7 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
                          cheby_order=3, dropout=0.5, num_nodes=0,
                          variant="ms_tgc_spddsbn", graph_mode="adaptive",
                          graph_adjacencies=None, graph_neighbors=4,
+                         graph_density=None,
                          graph_time_points=64, covariance_shrinkage=0.1):
     from .ms_tgc_spddsbn import GraphSPDManifoldHead, MSTGCSPDDSBN
 
@@ -278,6 +279,15 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
         "mstgc_wo_spddsbn": None,
     }[variant]
     use_cheb = variant not in ["mstgc_dta_ce", "mstgc_wo_cheb"]
+    if graph_density is not None:
+        graph_density = float(graph_density)
+        if not 0.0 < graph_density <= 1.0:
+            raise ValueError("MS-TGC graph density must be in (0, 1]")
+        if not use_cheb or str(graph_mode) != "adaptive":
+            raise ValueError(
+                "MS-TGC graph-density sensitivity requires an adaptive "
+                "Chebyshev graph"
+            )
     spd_representation = (
         "covariance" if variant == "mstgc_cov_spddsbn" else "augmented"
     )
@@ -330,6 +340,7 @@ def build_ms_tgc_spddsbn(project_root, nchannels, nsamples, nclasses, domains,
         graph_mode=graph_mode,
         graph_adjacencies=graph_adjacencies,
         graph_neighbors=graph_neighbors,
+        graph_density=graph_density,
         graph_time_points=graph_time_points,
         use_channel_attention=(variant != "mstgc_wo_channel_attention"),
         temporal_mode=temporal_mode,
@@ -746,6 +757,13 @@ def _save_mstgc_graph_state(model, channels, output_dir):
         adjacencies=adjacencies.astype(np.float32),
         graph_weights=np.asarray(weights, dtype=np.float32),
         neighbors=np.asarray([graph.neighbors], dtype=np.int64),
+        configured_density=np.asarray([
+            np.nan if graph.density is None else graph.density
+        ], dtype=np.float32),
+        actual_density=np.asarray([
+            np.count_nonzero(np.triu(adjacencies[0], k=1))
+            / float(max(1, graph.num_nodes * (graph.num_nodes - 1) // 2))
+        ], dtype=np.float32),
     )
 
 
@@ -1093,7 +1111,8 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     mstgc_num_heads=4, mstgc_cheby_order=3,
                     mstgc_dropout=0.5, mstgc_num_nodes=0,
                     mstgc_graph_k=4, mstgc_time_points=64,
-                    mstgc_shrinkage=0.1, refit_batch_size=16,
+                    mstgc_graph_density=None, mstgc_shrinkage=0.1,
+                    refit_batch_size=16,
                     recurrent_hidden=64, recurrent_layers=1,
                     recurrent_dropout=0.5,
                     transformer_d_model=64, transformer_heads=4,
@@ -1224,6 +1243,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
             graph_mode=mstgc_graph_mode,
             graph_adjacencies=graph_adjacencies,
             graph_neighbors=mstgc_graph_k,
+            graph_density=mstgc_graph_density,
             graph_time_points=mstgc_time_points,
             covariance_shrinkage=mstgc_shrinkage,
         ).to(device)
@@ -1636,6 +1656,20 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         "mstgc_graph_mode": (
             (getattr(model, "graph_mode", "") if getattr(model, "graph", None) is not None else "none")
             if model_type in MSTGC_MODEL_TYPES else ""
+        ),
+        "mstgc_graph_density": (
+            getattr(getattr(model, "graph", None), "density", "")
+            if model_type in MSTGC_MODEL_TYPES else ""
+        ),
+        "mstgc_graph_actual_density": (
+            float(
+                torch.count_nonzero(torch.triu(
+                    model.graph._adjacencies()[0], diagonal=1
+                )).item()
+                / max(1, model.graph.num_nodes * (model.graph.num_nodes - 1) // 2)
+            )
+            if model_type in MSTGC_MODEL_TYPES
+            and getattr(model, "graph", None) is not None else ""
         ),
         "val_stat_refit": bool(val_stat_refit),
         "mstgc_architecture": (
