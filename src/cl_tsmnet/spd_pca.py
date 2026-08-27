@@ -52,6 +52,32 @@ def validate_spd_matrices(matrices, name, symmetry_atol=1e-8):
     }
 
 
+def migrate_legacy_spddsbn_buffers(state_dict, expected_state_dict):
+    """Remove an old retained batch singleton from SPDDSBN running stats."""
+    migrated = []
+    suffixes = (
+        ".running_mean", ".running_var",
+        ".running_mean_test", ".running_var_test",
+    )
+    for key, expected in expected_state_dict.items():
+        if key not in state_dict:
+            continue
+        saved = state_dict[key]
+        if (
+            ".spddsbnorm.batchnorm." in key
+            and key.endswith(suffixes)
+            and tuple(saved.shape) == (1,) + tuple(expected.shape)
+        ):
+            state_dict[key] = saved.squeeze(0)
+            migrated.append({
+                "key": key,
+                "checkpoint_shape": [int(v) for v in saved.shape],
+                "model_shape": [int(v) for v in expected.shape],
+                "operation": "squeeze_leading_batch_singleton",
+            })
+    return state_dict, migrated
+
+
 def _symmetric_function(matrix, function, context):
     matrix = _symmetrize(matrix)
     values, vectors = np.linalg.eigh(matrix)

@@ -30,6 +30,7 @@ from src.cl_tsmnet.spd_pca import (
     balanced_plot_manifest,
     choose_median_fold,
     common_tangent_vectors,
+    migrate_legacy_spddsbn_buffers,
     validate_spd_matrices,
 )
 from src.cl_tsmnet.splits import domain_ids, make_split
@@ -648,8 +649,11 @@ def main():
         graph_time_points=config["mstgc_time_points"],
         covariance_shrinkage=config["mstgc_shrinkage"],
     ).to(device)
+    checkpoint_state, checkpoint_migrations = migrate_legacy_spddsbn_buffers(
+        _load_state(checkpoint), model.state_dict()
+    )
     try:
-        model.load_state_dict(_load_state(checkpoint), strict=True)
+        model.load_state_dict(checkpoint_state, strict=True)
     except RuntimeError as exc:
         raise RuntimeError(
             "Checkpoint architecture mismatch. Supply the exact MS-TGC CLI "
@@ -764,6 +768,7 @@ def main():
         "model_config": config,
         "plot_seed": int(args.plot_seed),
         "feature_cache_reused": bool(reused),
+        "checkpoint_buffer_migrations": checkpoint_migrations,
         "font_family": matplotlib.rcParams["font.family"],
         "versions": {
             "python": platform.python_version(),
@@ -777,6 +782,7 @@ def main():
     _json_dump(run_config, os.path.join(args.output_dir, "run_config.json"))
     print("Selected target subject:", subject)
     print("Checkpoint:", checkpoint)
+    print("Legacy SPDDSBN buffers migrated:", len(checkpoint_migrations))
     print("SPD shape:", pre.shape)
     print("Minimum eigenvalue before SPDDSBN:", checks["pre"]["minimum_eigenvalue"])
     print("Minimum eigenvalue after SPDDSBN:", checks["post"]["minimum_eigenvalue"])

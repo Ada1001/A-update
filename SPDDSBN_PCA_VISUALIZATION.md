@@ -64,6 +64,12 @@ not available in `outputs/master_summary.csv`, pass the same `--subspacedims`
 and `--mstgc-*` arguments used for training. Checkpoint loading is strict and
 stops on any architecture mismatch.
 
+Older trained checkpoints may contain SPDDSBN running-statistic buffers with
+one retained leading batch singleton, for example `[1,1,20,20]` instead of the
+declared `[1,20,20]`. The loader records and removes only this exact legacy
+singleton before strict loading; no parameter or target-domain statistic is
+dropped. New training runs keep these registered buffer shapes invariant.
+
 ## Outputs
 
 The output directory contains all three figures as PDF, SVG, and 600 dpi PNG,

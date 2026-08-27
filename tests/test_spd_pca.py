@@ -11,6 +11,7 @@ from src.cl_tsmnet.spd_pca import (
     balanced_plot_manifest,
     choose_median_fold,
     common_tangent_vectors,
+    migrate_legacy_spddsbn_buffers,
     tangent_vectorize,
     validate_spd_matrices,
 )
@@ -126,6 +127,59 @@ class SPDPCAForwardContractTests(unittest.TestCase):
         self.assertTrue(torch.all(
             torch.linalg.eigvalsh(intermediates["spd_post_bn"]) > 0
         ))
+
+    def test_spddsbn_training_keeps_registered_buffer_shapes(self):
+        model = build_ms_tgc_spddsbn(
+            os.getcwd(), nchannels=4, nsamples=32, nclasses=2,
+            domains=np.asarray([0, 1]), temporal_hidden=4,
+            graph_hidden=4, fusion_dim=6, kernel_length=5,
+            num_heads=2, cheby_order=2, dropout=0.0,
+            graph_time_points=8, subspacedims=3,
+            covariance_shrinkage=0.1, variant="ms_tgc_spddsbn",
+        )
+        before = {
+            key: tuple(value.shape)
+            for key, value in model.state_dict().items()
+            if ".spddsbnorm.batchnorm." in key and "running_" in key
+        }
+        model.train()
+        model(
+            torch.randn(4, 4, 32),
+            torch.tensor([0, 0, 1, 1]),
+        )
+        after = {
+            key: tuple(value.shape)
+            for key, value in model.state_dict().items()
+            if ".spddsbnorm.batchnorm." in key and "running_" in key
+        }
+        self.assertEqual(before, after)
+
+    def test_legacy_spddsbn_checkpoint_buffers_are_migrated_strictly(self):
+        model = build_ms_tgc_spddsbn(
+            os.getcwd(), nchannels=4, nsamples=32, nclasses=2,
+            domains=np.asarray([0, 1]), temporal_hidden=4,
+            graph_hidden=4, fusion_dim=6, kernel_length=5,
+            num_heads=2, cheby_order=2, dropout=0.0,
+            graph_time_points=8, subspacedims=3,
+            covariance_shrinkage=0.1, variant="ms_tgc_spddsbn",
+        )
+        expected = model.state_dict()
+        legacy = {
+            key: (
+                value.unsqueeze(0)
+                if ".spddsbnorm.batchnorm." in key and "running_" in key
+                else value.clone()
+            )
+            for key, value in expected.items()
+        }
+        migrated, records = migrate_legacy_spddsbn_buffers(legacy, expected)
+        model.load_state_dict(migrated, strict=True)
+        self.assertGreater(len(records), 0)
+        for record in records:
+            self.assertEqual(
+                tuple(migrated[record["key"]].shape),
+                tuple(expected[record["key"]].shape),
+            )
 
 
 if __name__ == "__main__":

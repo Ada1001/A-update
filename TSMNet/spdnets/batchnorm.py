@@ -501,14 +501,28 @@ class SPDBatchNormImpl(BaseBatchNorm):
 
         if self.training:
             with torch.no_grad():
-                self.running_mean.data = rm.clone()
-                self.running_mean_test.data = functionals.spd_2point_interpolation(self.running_mean_test, batch_mean, self.eta_test)
+                # Batch statistics retain the reduced batch dimension. Keep
+                # registered buffer shapes equal to their declared manifold
+                # shape so checkpoints can be loaded into a fresh model.
+                self.running_mean.copy_(rm.reshape(self.running_mean.shape))
+                running_mean_test = functionals.spd_2point_interpolation(
+                    self.running_mean_test, batch_mean, self.eta_test
+                )
+                self.running_mean_test.copy_(
+                    running_mean_test.reshape(self.running_mean_test.shape)
+                )
                 if self.dispersion is not BatchNormDispersion.NONE:
-                    self.running_var = rv.clone()
+                    self.running_var.copy_(rv.reshape(self.running_var.shape))
                     GT_test = functionals.sym_logm.apply(bm_invsq @ self.running_mean_test @ bm_invsq)
                     batch_var_test = torch.norm(XT - GT_test, p='fro', dim=(-2,-1), keepdim=True).square().mean(dim=self.batchdim, keepdim=True).squeeze(-1)
 
-                    self.running_var_test = (1. - self.eta_test) * self.running_var_test + self.eta_test * batch_var_test
+                    running_var_test = (
+                        (1. - self.eta_test) * self.running_var_test
+                        + self.eta_test * batch_var_test
+                    )
+                    self.running_var_test.copy_(
+                        running_var_test.reshape(self.running_var_test.shape)
+                    )
 
         return Xn
 
