@@ -287,6 +287,14 @@ def save_npz(dataset, path):
         channels=np.asarray(dataset["channels"]).astype("U32"),
         fs=np.asarray([dataset["fs"]], dtype=np.float32),
         name=np.asarray([dataset["name"]]).astype("U64"),
+        label_name_ids=np.asarray(
+            sorted(int(v) for v in dataset.get("label_names", {})),
+            dtype=np.int64,
+        ),
+        label_name_values=np.asarray([
+            str(dataset.get("label_names", {})[key])
+            for key in sorted(int(v) for v in dataset.get("label_names", {}))
+        ]).astype("U64"),
         preprocess_standardized=np.asarray(
             [bool(dataset.get("preprocess_standardized", False))], dtype=np.bool_
         ),
@@ -330,6 +338,24 @@ def load_npz(path):
     subjects_without_windows = []
     if "subjects_without_windows" in data:
         subjects_without_windows = _subject_list(data["subjects_without_windows"].astype(np.int64))
+    label_names = {}
+    if "label_name_ids" in data and "label_name_values" in data:
+        label_names = {
+            int(key): str(value)
+            for key, value in zip(data["label_name_ids"], data["label_name_values"])
+        }
+    if not label_names:
+        dataset_name = str(data["name"][0])
+        if dataset_name == "stew":
+            label_names = {0: "low workload", 1: "high workload"}
+        elif dataset_name == "eegmat":
+            label_names = {0: "resting/background EEG", 1: "mental arithmetic"}
+        elif dataset_name == "cog-bci-nback":
+            label_names = {0: "0-back", 1: "1-back", 2: "2-back"}
+        elif dataset_name == "cog-bci-matb":
+            label_names = {
+                0: "MAT-B easy", 1: "MAT-B medium", 2: "MAT-B difficult"
+            }
     return {
         "name": str(data["name"][0]),
         "x": data["x"].astype(np.float32),
@@ -337,7 +363,7 @@ def load_npz(path):
         "meta": meta,
         "channels": [str(c) for c in data["channels"]],
         "fs": float(data["fs"][0]),
-        "label_names": {},
+        "label_names": label_names,
         "preprocess_standardized": preprocess_standardized,
         "legacy_object_cache": legacy_object_cache,
         "recording_subjects": recording_subjects,

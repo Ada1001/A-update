@@ -418,15 +418,22 @@ class GraphSPDManifoldHead(nn.Module):
         spd = self.build_spd(maps)
         return self.spdnet(spd)
 
-    def forward(self, maps, domains):
+    def forward(self, maps, domains, return_intermediates=False):
         latent = self.manifold_features(maps)
+        spd_pre_bn = latent
         if hasattr(self, "spdbnorm"):
             latent = self.spdbnorm(latent)
         if hasattr(self, "spddsbnorm"):
             latent = self.spddsbnorm(
                 latent, domains.to(device=self.spd_device)
             )
-        return self.logeig(latent)
+        tangent = self.logeig(latent)
+        if return_intermediates:
+            return tangent, {
+                "spd_pre_bn": spd_pre_bn.squeeze(1),
+                "spd_post_bn": latent.squeeze(1),
+            }
+        return tangent
 
     def refit_domain_features(self, latent, domains):
         if not hasattr(self, "spddsbnorm"):
@@ -606,15 +613,29 @@ class MSTGCSPDDSBN(nn.Module):
             latent = self.eudsbnorm(latent, domains.to(self.graph_device))
         return latent
 
-    def forward(self, x, d):
+    def forward(self, x, d, return_intermediates=False):
         maps = self._weighted_graph_maps(x)
         if self.use_spd:
-            latent = self.spd_branch(maps, d).to(
+            spd_output = self.spd_branch(
+                maps, d, return_intermediates=return_intermediates
+            )
+            if return_intermediates:
+                latent, intermediates = spd_output
+            else:
+                latent = spd_output
+            latent = latent.to(
                 self.graph_device, dtype=torch.float32
             )
         else:
+            if return_intermediates:
+                raise ValueError(
+                    "SPD intermediates are unavailable for a non-SPD MS-TGC variant"
+                )
             latent = self._first_order_readout(maps, d, apply_dsbn=True)
-        return self.classifier(self.readout(latent))
+        logits = self.classifier(self.readout(latent))
+        if return_intermediates:
+            return logits, intermediates
+        return logits
 
     def domainadapt_finetune(self, x, y, d, target_domains):
         was_training = self.training

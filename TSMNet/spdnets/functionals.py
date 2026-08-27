@@ -457,13 +457,28 @@ class sym_invm(Function):
         return sym_modeig.backward(dX, s, smod, U, sym_invm.derivative), None
 
 
-def spd_mean_kracher_flow(X : Tensor, G0 : Tensor = None, maxiter : int = 50, dim = 0, weights = None, return_dist = False, return_XT = False) -> Tensor:
+def spd_mean_kracher_flow(X : Tensor, G0 : Tensor = None, maxiter : int = 50,
+                          dim = 0, weights = None, return_dist = False,
+                          return_XT = False, tolerance = None,
+                          return_info = False) -> Tensor:
+
+    tol = float(EPS[X.dtype] if tolerance is None else tolerance)
+    if tol <= 0.0:
+        raise ValueError("Karcher-flow tolerance must be positive")
 
     if X.shape[dim] == 1:
+        info = {
+            "iterations": 0,
+            "residual": 0.0,
+            "converged": True,
+            "tolerance": tol,
+            "max_iterations": int(maxiter),
+        }
         if return_dist:
-            return X, torch.tensor([0.0], dtype=X.dtype, device=X.device)
+            result = (X, torch.tensor([0.0], dtype=X.dtype, device=X.device))
         else:
-            return X
+            result = X
+        return (result, info) if return_info else result
 
     if weights is None:
         n = X.shape[dim]
@@ -479,7 +494,7 @@ def spd_mean_kracher_flow(X : Tensor, G0 : Tensor = None, maxiter : int = 50, di
     dist = tau = crit = torch.finfo(X.dtype).max
     i = 0
 
-    while (crit > EPS[X.dtype]) and (i < maxiter) and (nu > EPS[X.dtype]):
+    while (crit > tol) and (i < maxiter) and (nu > EPS[X.dtype]):
         i += 1
 
         Gsq, Ginvsq = sym_invsqrtm2.apply(G)
@@ -498,7 +513,21 @@ def spd_mean_kracher_flow(X : Tensor, G0 : Tensor = None, maxiter : int = 50, di
             nu = 0.5 * nu
 
     if return_dist:
-        return G, dist
-    if return_XT:
-        return G, XT
-    return G
+        result = (G, dist)
+    elif return_XT:
+        result = (G, XT)
+    else:
+        result = G
+    if return_info:
+        residual = float(
+            crit.detach().cpu().item() if torch.is_tensor(crit) else crit
+        )
+        info = {
+            "iterations": int(i),
+            "residual": residual,
+            "converged": bool(residual <= tol),
+            "tolerance": tol,
+            "max_iterations": int(maxiter),
+        }
+        return result, info
+    return result
