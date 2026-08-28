@@ -1,0 +1,2 @@
+# Optional dependencies for publication-quality nonlinear embedding supplements.
+umap-learn>=0.5.5

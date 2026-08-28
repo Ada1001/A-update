@@ -14,6 +14,8 @@ Main entry points:
 - `SPDDSBN_PCA_VISUALIZATION.md`: exact feature locations, leakage controls, command, and reproducibility artifacts for B3/B4
 - `analysis/plot_riemannian_mds.py`: joint AIRM metric-MDS of subject-by-class Frechet centers before/after SPDDSBN, read directly from the original LOSO summary, best checkpoint, and window cache under `outputs/`
 - `RIEMANNIAN_MDS_VISUALIZATION.md`: Riemannian MDS protocol, leakage controls, commands, stress reporting, and outputs
+- `analysis/plot_nonlinear_alignment_embeddings.py`: source-pre-fitted stable UMAP and one jointly fitted paired pre/post t-SNE supplement from a representative LOSO checkpoint
+- `NONLINEAR_EMBEDDING_VISUALIZATION.md`: nonlinear embedding protocol, dependency, commands, quality metrics, leakage controls, and output manifest
 
 The pipeline uses 1 s non-overlapping windows. Cache construction performs only channel selection, segment selection, filtering, and resampling; robust per-channel normalization is fitted inside each split from source-domain training windows only, then applied to validation and target/test windows. Optional artifact-window rejection can be enabled with `--artifact-z`, using the same source-only normalization. Sampling rates are dataset-aware: STEW stays at its native 128 Hz, while EEGMAT and COG-BCI are resampled from 500 Hz to 250 Hz by default. Use `--target-fs` to override this.
 
