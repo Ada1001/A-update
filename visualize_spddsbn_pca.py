@@ -33,19 +33,28 @@ from src.cl_tsmnet.spd_pca import (
     migrate_legacy_spddsbn_buffers,
     validate_spd_matrices,
 )
+from src.cl_tsmnet.spd_visualization_adapters import (
+    SUPPORTED_SPD_VISUALIZATION_MODELS,
+    extract_spd_intermediates,
+    visualization_model_metadata,
+)
 from src.cl_tsmnet.splits import domain_ids, make_split
 from src.cl_tsmnet.training import (
     _filter_artifact_windows,
     build_ms_tgc_spddsbn,
+    build_tsmnet,
     fit_source_normalizer,
 )
 
 
 DOMAIN_COLORS = {"source": "#4C78A8", "target": "#E45756"}
 CLASS_COLORS = ["#3B75AF", "#D94F45", "#E3A12F", "#6F4E9C", "#2A9D8F"]
-MODEL_TYPES = {"ms_tgc_spddsbn", "mstgc_augspd_spddsbn"}
+MODEL_TYPES = SUPPORTED_SPD_VISUALIZATION_MODELS
 DEFAULT_MODEL_CONFIG = {
+    "temporal_filters": 4,
+    "spatial_filters": 40,
     "subspacedims": 20,
+    "temp_kernel": 25,
     "mstgc_temporal_hidden": 64,
     "mstgc_graph_hidden": 64,
     "mstgc_fusion_dim": 128,
@@ -67,7 +76,7 @@ DEFAULT_MODEL_CONFIG = {
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Visualize MS-TGC SPD features before/after SPDDSBN."
+        description="Visualize TSMNet/MS-TGC SPD features before/after SPDDSBN."
     )
     parser.add_argument("--dataset", choices=["stew", "eegmat", "cog-bci"], required=True)
     parser.add_argument("--cog-paradigm", choices=["nback", "matb"], default="nback")
@@ -99,7 +108,10 @@ def parse_args():
     parser.add_argument("--val-size", type=float, default=None)
     parser.add_argument("--test-size", type=float, default=None)
     parser.add_argument("--artifact-z", type=float, default=None)
+    parser.add_argument("--temporal-filters", type=int, default=None)
+    parser.add_argument("--spatial-filters", type=int, default=None)
     parser.add_argument("--subspacedims", type=int, default=None)
+    parser.add_argument("--temp-kernel", type=int, default=None)
     parser.add_argument("--mstgc-temporal-hidden", type=int, default=None)
     parser.add_argument("--mstgc-graph-hidden", type=int, default=None)
     parser.add_argument("--mstgc-fusion-dim", type=int, default=None)
@@ -148,7 +160,7 @@ def _matching_run_record(master_path, checkpoint_root, dataset_name, model):
     if "protocol" in frame:
         frame = frame[frame["protocol"].astype(str) == "loso"]
     if "model_type" in frame:
-        frame = frame[frame["model_type"].astype(str).isin(MODEL_TYPES)]
+        frame = frame[frame["model_type"].astype(str) == model]
     if "dataset" in frame:
         frame = frame[frame["dataset"].astype(str) == dataset_name]
     if frame.empty:
@@ -159,10 +171,6 @@ def _matching_run_record(master_path, checkpoint_root, dataset_name, model):
         )]
         if not exact.empty:
             frame = exact
-    if "model_type" in frame:
-        exact_model = frame[frame["model_type"].astype(str) == model]
-        if not exact_model.empty:
-            frame = exact_model
     return frame.iloc[-1].dropna().to_dict()
 
 
@@ -203,12 +211,13 @@ def _select_fold(args, dataset_name):
         if "dataset" in results:
             results = results[results["dataset"].astype(str) == dataset_name]
         if "model_type" in results:
-            exact = results[results["model_type"].astype(str) == args.model]
-            results = exact if not exact.empty else results[
-                results["model_type"].astype(str).isin(MODEL_TYPES)
-            ]
+            results = results[results["model_type"].astype(str) == args.model]
         if results.empty:
-            raise ValueError("No matching MS-TGC LOSO rows were found in {}".format(results_path))
+            raise ValueError(
+                "No matching {} LOSO rows were found in {}".format(
+                    args.model, results_path
+                )
+            )
         selection = choose_median_fold(results)
         selection["dataset"] = dataset_name
         selection["results_file"] = os.path.abspath(results_path)
@@ -268,7 +277,7 @@ def _dataset_name(args):
     return "cog-bci-{}".format(args.cog_paradigm) if args.dataset == "cog-bci" else args.dataset
 
 
-def _feature_signature(checkpoint, cache, subject, config):
+def _feature_signature(checkpoint, cache, subject, config, model_type):
     stat = os.stat(checkpoint)
     return {
         "checkpoint_path": os.path.abspath(checkpoint),
@@ -276,6 +285,8 @@ def _feature_signature(checkpoint, cache, subject, config):
         "checkpoint_mtime_ns": int(stat.st_mtime_ns),
         "cache_path": os.path.abspath(cache),
         "target_subject": int(subject),
+        "model_type": str(model_type),
+        "model_config": config,
         "split_seed": int(config["seed"]),
         "val_size": float(config["val_size"]),
         "test_size": float(config["test_size"]),
@@ -283,8 +294,8 @@ def _feature_signature(checkpoint, cache, subject, config):
     }
 
 
-def _extract_features(model, dataset, indices, domains, normalizer, split_name,
-                      batch_size, device):
+def _extract_features(model, model_type, dataset, indices, domains, normalizer,
+                      split_name, batch_size, device):
     pre_parts, post_parts = [], []
     indices = np.asarray(indices, dtype=np.int64)
     model.eval()
@@ -294,7 +305,9 @@ def _extract_features(model, dataset, indices, domains, normalizer, split_name,
             windows = normalizer.transform_array(dataset["x"][batch_indices])
             xb = torch.from_numpy(windows).to(device=device, dtype=torch.float32)
             db = torch.from_numpy(domains[batch_indices]).to(device=device, dtype=torch.long)
-            _, intermediates = model(xb, db, return_intermediates=True)
+            _, intermediates = extract_spd_intermediates(
+                model, xb, db, model_type
+            )
             pre_parts.append(intermediates["spd_pre_bn"].detach().cpu().double().numpy())
             post_parts.append(intermediates["spd_post_bn"].detach().cpu().double().numpy())
     pre = np.concatenate(pre_parts, axis=0)
@@ -309,7 +322,9 @@ def _extract_or_load(args, dataset, split, domains, normalizer, model, checkpoin
     feature_path = os.path.join(args.output_dir, "spd_intermediates.npz")
     metadata_path = os.path.join(args.output_dir, "spd_intermediates_metadata.csv")
     signature_path = os.path.join(args.output_dir, "extraction_signature.json")
-    signature = _feature_signature(checkpoint, cache, subject, config)
+    signature = _feature_signature(
+        checkpoint, cache, subject, config, args.model
+    )
     can_reuse = all(os.path.exists(path) for path in [
         feature_path, metadata_path, signature_path
     ]) and not args.force_reextract
@@ -331,11 +346,11 @@ def _extract_or_load(args, dataset, split, domains, normalizer, model, checkpoin
     if np.intersect1d(source_ids, target_ids).size:
         raise RuntimeError("Source-train and target-test sample IDs overlap")
     source_pre, source_post = _extract_features(
-        model, dataset, source_ids, domains, normalizer, "source_train",
+        model, args.model, dataset, source_ids, domains, normalizer, "source_train",
         args.batch_size, device,
     )
     target_pre, target_post = _extract_features(
-        model, dataset, target_ids, domains, normalizer, "target_test",
+        model, args.model, dataset, target_ids, domains, normalizer, "target_test",
         args.batch_size, device,
     )
     sample_ids = np.concatenate([source_ids, target_ids])
@@ -585,6 +600,14 @@ def main():
     if selected_result and str(selected_result.get("target_adapt", "True")).lower() in {
             "false", "0", "no"}:
         raise ValueError("Selected checkpoint was evaluated without target SPDDSBN adaptation")
+    if (
+        args.model == "tsmnet"
+        and selected_result.get("bnorm") not in [None, "", "spddsbn"]
+    ):
+        raise ValueError(
+            "TSMNet B3/B4 requires an SPDDSBN checkpoint, but summary.csv "
+            "reports bnorm={!r}".format(selected_result.get("bnorm"))
+        )
     if selected_result.get("target_refit_scope") not in [None, "", "target_only"]:
         raise ValueError(
             "Selected checkpoint has unexpected target_refit_scope={!r}".format(
@@ -626,29 +649,39 @@ def main():
     train_labels = np.unique(dataset["y"][split["train"]]).astype(np.int64)
     if not np.array_equal(train_labels, np.arange(len(train_labels))):
         raise ValueError("Source training labels are not contiguous 0..K-1")
-    kernel_samples = max(3, int(round(
-        float(config["mstgc_kernel_length"]) * float(dataset["fs"]) / 128.0
-    )))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build_ms_tgc_spddsbn(
-        os.getcwd(), dataset["x"].shape[1], dataset["x"].shape[2],
-        len(train_labels), domains[selected],
-        subspacedims=config["subspacedims"], device=device,
-        temporal_hidden=config["mstgc_temporal_hidden"],
-        graph_hidden=config["mstgc_graph_hidden"],
-        fusion_dim=config["mstgc_fusion_dim"],
-        kernel_length=kernel_samples,
-        num_heads=config["mstgc_num_heads"],
-        cheby_order=config["mstgc_cheby_order"],
-        dropout=config["mstgc_dropout"],
-        num_nodes=config["mstgc_num_nodes"],
-        variant=args.model,
-        graph_mode="adaptive",
-        graph_neighbors=config["mstgc_graph_k"],
-        graph_density=config["mstgc_graph_density"],
-        graph_time_points=config["mstgc_time_points"],
-        covariance_shrinkage=config["mstgc_shrinkage"],
-    ).to(device)
+    if args.model == "tsmnet":
+        model = build_tsmnet(
+            os.getcwd(), dataset["x"].shape[1], dataset["x"].shape[2],
+            len(train_labels), domains[selected], bnorm="spddsbn",
+            temporal_filters=config["temporal_filters"],
+            spatial_filters=config["spatial_filters"],
+            subspacedims=config["subspacedims"],
+            temp_kernel=config["temp_kernel"], device=device,
+        ).to(device)
+    else:
+        kernel_samples = max(3, int(round(
+            float(config["mstgc_kernel_length"]) * float(dataset["fs"]) / 128.0
+        )))
+        model = build_ms_tgc_spddsbn(
+            os.getcwd(), dataset["x"].shape[1], dataset["x"].shape[2],
+            len(train_labels), domains[selected],
+            subspacedims=config["subspacedims"], device=device,
+            temporal_hidden=config["mstgc_temporal_hidden"],
+            graph_hidden=config["mstgc_graph_hidden"],
+            fusion_dim=config["mstgc_fusion_dim"],
+            kernel_length=kernel_samples,
+            num_heads=config["mstgc_num_heads"],
+            cheby_order=config["mstgc_cheby_order"],
+            dropout=config["mstgc_dropout"],
+            num_nodes=config["mstgc_num_nodes"],
+            variant=args.model,
+            graph_mode="adaptive",
+            graph_neighbors=config["mstgc_graph_k"],
+            graph_density=config["mstgc_graph_density"],
+            graph_time_points=config["mstgc_time_points"],
+            covariance_shrinkage=config["mstgc_shrinkage"],
+        ).to(device)
     checkpoint_state, checkpoint_migrations = migrate_legacy_spddsbn_buffers(
         _load_state(checkpoint), model.state_dict()
     )
@@ -656,7 +689,7 @@ def main():
         model.load_state_dict(checkpoint_state, strict=True)
     except RuntimeError as exc:
         raise RuntimeError(
-            "Checkpoint architecture mismatch. Supply the exact MS-TGC CLI "
+            "Checkpoint architecture mismatch. Supply the exact model CLI "
             "hyperparameters used for training. Original error:\n{}".format(exc)
         ) from exc
     model.eval()
@@ -752,6 +785,7 @@ def main():
     }
     _json_dump(checks, os.path.join(args.output_dir, "numerical_checks.json"))
 
+    model_metadata = visualization_model_metadata(args.model)
     run_config = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "git_sha": _git_sha(),
@@ -760,10 +794,11 @@ def main():
         "cache": os.path.abspath(cache),
         "target_subject": int(subject),
         "checkpoint": checkpoint,
-        "model_class": "src.cl_tsmnet.ms_tgc_spddsbn.MSTGCSPDDSBN",
+        "model_type": args.model,
+        "model_class": model_metadata["model_class"],
         "feature_locations": {
-            "pre": "GraphSPDManifoldHead.manifold_features (BiMap+ReEig output)",
-            "post": "GraphSPDManifoldHead normalization output before LogEig",
+            "pre": model_metadata["pre"],
+            "post": model_metadata["post"],
         },
         "model_config": config,
         "plot_seed": int(args.plot_seed),

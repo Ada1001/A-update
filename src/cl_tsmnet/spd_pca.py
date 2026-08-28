@@ -64,7 +64,7 @@ def migrate_legacy_spddsbn_buffers(state_dict, expected_state_dict):
             continue
         saved = state_dict[key]
         if (
-            ".spddsbnorm.batchnorm." in key
+            "spddsbnorm.batchnorm." in key
             and key.endswith(suffixes)
             and tuple(saved.shape) == (1,) + tuple(expected.shape)
         ):

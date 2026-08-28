@@ -15,7 +15,8 @@ from src.cl_tsmnet.spd_pca import (
     tangent_vectorize,
     validate_spd_matrices,
 )
-from src.cl_tsmnet.training import build_ms_tgc_spddsbn
+from src.cl_tsmnet.spd_visualization_adapters import extract_spd_intermediates
+from src.cl_tsmnet.training import build_ms_tgc_spddsbn, build_tsmnet
 
 
 class SPDPCAUtilitiesTests(unittest.TestCase):
@@ -102,6 +103,29 @@ class SPDPCAUtilitiesTests(unittest.TestCase):
 
 
 class SPDPCAForwardContractTests(unittest.TestCase):
+    def test_tsmnet_adapter_preserves_logits_and_names_original_stages(self):
+        model = build_tsmnet(
+            os.getcwd(), nchannels=4, nsamples=32, nclasses=2,
+            domains=np.asarray([0, 1]), temporal_filters=2,
+            spatial_filters=5, subspacedims=3, temp_kernel=7,
+        ).eval()
+        windows = torch.randn(4, 4, 32)
+        domains = torch.tensor([0, 0, 1, 1])
+        with torch.no_grad():
+            default_output = model(windows, domains)
+            logits, intermediates = extract_spd_intermediates(
+                model, windows, domains, "tsmnet"
+            )
+        self.assertTrue(torch.equal(default_output[0], logits))
+        self.assertEqual(tuple(intermediates["spd_pre_bn"].shape), (4, 3, 3))
+        self.assertEqual(tuple(intermediates["spd_post_bn"].shape), (4, 3, 3))
+        self.assertTrue(torch.all(
+            torch.linalg.eigvalsh(intermediates["spd_pre_bn"]) > 0
+        ))
+        self.assertTrue(torch.all(
+            torch.linalg.eigvalsh(intermediates["spd_post_bn"]) > 0
+        ))
+
     def test_intermediate_forward_preserves_default_logits(self):
         model = build_ms_tgc_spddsbn(
             os.getcwd(), nchannels=4, nsamples=32, nclasses=2,
@@ -180,6 +204,25 @@ class SPDPCAForwardContractTests(unittest.TestCase):
                 tuple(migrated[record["key"]].shape),
                 tuple(expected[record["key"]].shape),
             )
+
+    def test_root_level_tsmnet_legacy_buffers_are_migrated(self):
+        model = build_tsmnet(
+            os.getcwd(), nchannels=4, nsamples=32, nclasses=2,
+            domains=np.asarray([0, 1]), temporal_filters=2,
+            spatial_filters=5, subspacedims=3, temp_kernel=7,
+        )
+        expected = model.state_dict()
+        legacy = {
+            key: (
+                value.unsqueeze(0)
+                if "spddsbnorm.batchnorm." in key and "running_" in key
+                else value.clone()
+            )
+            for key, value in expected.items()
+        }
+        migrated, records = migrate_legacy_spddsbn_buffers(legacy, expected)
+        model.load_state_dict(migrated, strict=True)
+        self.assertGreater(len(records), 0)
 
 
 if __name__ == "__main__":

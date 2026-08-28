@@ -1,10 +1,20 @@
-# SPDDSBN Common-Tangent-Space PCA (Figures B3/B4)
+# TSMNet/MS-TGC SPDDSBN Common-Tangent-Space PCA (Figures B3/B4)
 
 `visualize_spddsbn_pca.py` generates the paper-domain and workload-class
-visualizations for one trained `MS_TGC_SPDDSBN` LOSO fold. It does not train or
-modify the classifier.
+visualizations for one trained TSMNet-SPDDSBN or `MS_TGC_SPDDSBN` LOSO fold.
+It does not train, refit normalization statistics, or modify the classifier.
 
-The actual feature locations are in
+For the original TSMNet architecture, the extracted locations are:
+
+- `spd_pre_bn`: `TSMNet.spdnet` output (`BiMap + ReEig`), before
+  `TSMNet.spddsbnorm`
+- `spd_post_bn`: `TSMNet.spddsbnorm` output, before `TSMNet.logeig`
+
+TSMNet's original optional-forward tuple is decoded by the dedicated adapter in
+`src/cl_tsmnet/spd_visualization_adapters.py`. The model implementation and its
+ordinary training/evaluation forward path are unchanged.
+
+For MS-TGC, the locations remain in
 `src/cl_tsmnet/ms_tgc_spddsbn.py::GraphSPDManifoldHead`:
 
 - `spd_pre_bn`: output of `BiMap + ReEig`, before `AdaMomDomainSPDBatchNorm`
@@ -35,11 +45,37 @@ rows per subject, and selects the target balanced accuracy closest to the LOSO
 median. If no per-subject summary exists, use explicit target mode; the script
 will not invent a representative fold.
 
-## Command
+## TSMNet Command
+
+The checkpoint must come from a LOSO run trained with
+`--model tsmnet --bnorm spddsbn` and target adaptation enabled:
 
 ```bash
 python visualize_spddsbn_pca.py \
   --dataset stew \
+  --model tsmnet \
+  --mode auto-median-fold \
+  --checkpoint-root outputs/stew_loso_spddsbn \
+  --output-dir results/figures/manifold_alignment/tsmnet_stew \
+  --plot-seed 2026 \
+  --max-points-per-class-domain 500
+```
+
+For EEGMAT, replace the dataset and directories and add `--target-fs 250`.
+For COG-BCI, use `--dataset cog-bci --cog-paradigm nback --target-fs 250`
+or the corresponding MAT-B setting.
+
+If TSMNet was trained with non-default architecture settings and no matching
+master-summary row is available, pass the exact training values with
+`--temporal-filters`, `--spatial-filters`, `--subspacedims`, and
+`--temp-kernel`. Loading remains strict.
+
+## MS-TGC Command
+
+```bash
+python visualize_spddsbn_pca.py \
+  --dataset stew \
+  --model ms_tgc_spddsbn \
   --mode auto-median-fold \
   --checkpoint-root outputs/stew_loso_ms_tgc_spddsbn \
   --output-dir results/figures/manifold_alignment/stew \
@@ -59,12 +95,12 @@ python visualize_spddsbn_pca.py \
   --output-dir results/figures/manifold_alignment/stew
 ```
 
-If the training run used non-default MS-TGC dimensions and its matching row is
+If an MS-TGC training run used non-default dimensions and its matching row is
 not available in `outputs/master_summary.csv`, pass the same `--subspacedims`
 and `--mstgc-*` arguments used for training. Checkpoint loading is strict and
 stops on any architecture mismatch.
 
-Older trained checkpoints may contain SPDDSBN running-statistic buffers with
+Older TSMNet or MS-TGC checkpoints may contain SPDDSBN running-statistic buffers with
 one retained leading batch singleton, for example `[1,1,20,20]` instead of the
 declared `[1,20,20]`. The loader records and removes only this exact legacy
 singleton before strict loading; no parameter or target-domain statistic is
