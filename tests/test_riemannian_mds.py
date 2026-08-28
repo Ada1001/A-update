@@ -1,12 +1,16 @@
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 
 from analysis.plot_riemannian_mds import (
+    _resolve_feature_cache_dir,
+    _resolve_original_output_inputs,
     _select_representative,
+    _validate_selected_result,
     airm_distance,
     fit_metric_mds,
     pairwise_airm,
@@ -15,6 +19,107 @@ from analysis.plot_riemannian_mds import (
 
 
 class RiemannianMDSAnalysisTests(unittest.TestCase):
+    def test_extracted_feature_cache_directory_is_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(
+                _resolve_feature_cache_dir(directory, "unused"),
+                os.path.abspath(directory),
+            )
+
+    def test_missing_explicit_feature_cache_fails_at_the_cache_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = os.path.join(directory, "missing")
+            with self.assertRaisesRegex(FileNotFoundError, "not an extracted"):
+                _resolve_feature_cache_dir(missing, directory)
+
+    def test_original_loso_output_is_resolved_without_feature_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = os.path.join(directory, "stew_loso_ms_tgc_spddsbn")
+            os.makedirs(run_dir)
+            args = self._original_output_args(directory)
+            _resolve_original_output_inputs(args)
+            self.assertEqual(os.path.abspath(args.checkpoint_root), run_dir)
+            self.assertEqual(
+                os.path.abspath(args.results_file),
+                os.path.join(run_dir, "summary.csv"),
+            )
+            self.assertEqual(args.seed, 42)
+            self.assertEqual(args.mstgc_cheby_order, 3)
+
+    def test_master_summary_restores_exact_run_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = os.path.join(directory, "stew_loso_ms_tgc_spddsbn")
+            os.makedirs(run_dir)
+            pd.DataFrame([{
+                "dataset": "stew",
+                "model_type": "ms_tgc_spddsbn",
+                "protocol": "loso",
+                "output_dir": run_dir,
+                "seed": 17,
+                "val_size": 0.25,
+                "test_size": 0.2,
+                "target_fs": 128,
+                "mstgc_cheby_order": 4,
+                "mstgc_graph_k": 7,
+            }]).to_csv(os.path.join(directory, "master_summary.csv"), index=False)
+            args = self._original_output_args(directory)
+            _resolve_original_output_inputs(args)
+            self.assertEqual(args.seed, 17)
+            self.assertEqual(args.val_size, 0.25)
+            self.assertEqual(args.mstgc_cheby_order, 4)
+            self.assertEqual(args.mstgc_graph_k, 7)
+            self.assertEqual(args.target_fs, 128.0)
+            self.assertTrue(args.run_record)
+
+    def test_selected_result_requires_unlabeled_target_only_refit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result_path = os.path.join(directory, "summary.csv")
+            pd.DataFrame([{
+                "dataset": "stew",
+                "model_type": "ms_tgc_spddsbn",
+                "protocol": "loso",
+                "subject": 6,
+                "target_adapt": True,
+                "target_refit_scope": "target_only",
+            }]).to_csv(result_path, index=False)
+            args = SimpleNamespace(
+                dataset="stew", cog_paradigm="nback",
+                model="ms_tgc_spddsbn",
+            )
+            validation = _validate_selected_result(args, {
+                "selected_target_subject": 6,
+                "results_file": result_path,
+            })
+            self.assertEqual(validation["status"], "validated_from_summary")
+            self.assertEqual(validation["target_refit_scope"], ["target_only"])
+
+    @staticmethod
+    def _original_output_args(output_root):
+        values = {
+            "dataset": "stew",
+            "cog_paradigm": "nback",
+            "model": "ms_tgc_spddsbn",
+            "checkpoint_root": None,
+            "results_file": None,
+            "output_root": output_root,
+            "master_summary": None,
+            "feature_cache_dir": None,
+            "cache": None,
+            "target_fs": None,
+            "artifact_z": None,
+            "seed": None,
+            "val_size": None,
+            "test_size": None,
+        }
+        values.update({key: None for key in [
+            "temporal_filters", "spatial_filters", "subspacedims", "temp_kernel",
+            "mstgc_temporal_hidden", "mstgc_graph_hidden", "mstgc_fusion_dim",
+            "mstgc_kernel_length", "mstgc_num_heads", "mstgc_cheby_order",
+            "mstgc_dropout", "mstgc_num_nodes", "mstgc_graph_k",
+            "mstgc_graph_density", "mstgc_time_points", "mstgc_shrinkage",
+        ]})
+        return SimpleNamespace(**values)
+
     def test_airm_distance_matches_diagonal_closed_form(self):
         left = np.diag([1.0, 4.0, 9.0])
         right = np.diag([4.0, 9.0, 36.0])

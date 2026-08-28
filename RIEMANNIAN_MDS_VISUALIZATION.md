@@ -26,22 +26,32 @@ construction, plotting, and descriptive target-to-source distances. They do
 not affect model parameters, SPDDSBN statistics, fold selection, or MDS seed
 selection.
 
-## Validated Feature Cache
+## Original LOSO Outputs
+
+The default and recommended route reads the original experiment outputs. For
+the complete MS_TGC_SPDDSBN model on STEW:
 
 ```bash
 python analysis/plot_riemannian_mds.py \
   --dataset stew \
   --model ms_tgc_spddsbn \
-  --target-subject 6 \
-  --feature-cache-dir outputs/_riemannian_mds_input/stew \
+  --output-root outputs \
   --output-dir results/figures/riemannian_mds/stew_ms_tgc
 ```
 
-`--target-subject` is required when the machine does not have the original
-per-subject `summary.csv`. It must agree with any cached representative-fold
-metadata.
+This command automatically reads:
 
-## Direct Checkpoint Extraction
+- `outputs/stew_loso_ms_tgc_spddsbn/summary.csv` to select the LOSO fold whose
+  Balanced Accuracy is closest to the across-subject median;
+- the selected `subject_XX/model.pt` best checkpoint;
+- `outputs/master_summary.csv` to restore the split and model configuration;
+- the original LOSO window cache recorded by that master-summary row.
+
+The script stops instead of guessing when the original summary, checkpoint, or
+architecture is incompatible. `--target-subject` may override automatic fold
+selection, but the subject must still exist in the original summary.
+
+## Outputs Saved Elsewhere
 
 ```bash
 python analysis/plot_riemannian_mds.py \
@@ -53,8 +63,22 @@ python analysis/plot_riemannian_mds.py \
 ```
 
 For original TSMNet, use `--model tsmnet` and its SPDDSBN checkpoint directory,
-for example `outputs/stew_loso_spddsbn`. Non-default model dimensions must be
-passed exactly as they were during training; checkpoint loading is strict.
+which is auto-resolved as `outputs/stew_loso_spddsbn` by default:
+
+```bash
+python analysis/plot_riemannian_mds.py \
+  --dataset stew \
+  --model tsmnet \
+  --output-root outputs \
+  --output-dir results/figures/riemannian_mds/stew_tsmnet
+```
+
+`--feature-cache-dir` remains available only for an explicitly supplied,
+already extracted directory containing `spd_intermediates.npz` and its
+metadata. It is an optional acceleration path, not the default evidence source.
+Archive files are not accepted. Non-default model dimensions are restored from
+the matching master-summary row; explicit CLI values take precedence, and
+checkpoint loading remains strict.
 
 The output directory contains the requested centroid, distance, coordinate,
 metadata, PDF, SVG, and 600 dpi PNG artifacts. A supplementary 3D MDS is

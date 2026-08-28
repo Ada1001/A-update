@@ -28,7 +28,11 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from src.cl_tsmnet.datasets import load_dataset
-from src.cl_tsmnet.experiment_utils import default_cache_path, default_target_fs
+from src.cl_tsmnet.experiment_utils import (
+    default_cache_path,
+    default_target_fs,
+    run_directory_name,
+)
 from src.cl_tsmnet.spd_pca import migrate_legacy_spddsbn_buffers
 from src.cl_tsmnet.spd_visualization_adapters import (
     SUPPORTED_SPD_VISUALIZATION_MODELS,
@@ -51,6 +55,24 @@ CLASS_COLORS = {
     "high": "#D9534F",
 }
 FALLBACK_COLORS = ["#3B75AF", "#D9534F", "#D9A62E", "#6F4E9C", "#2A9D8F"]
+MODEL_CONFIG_DEFAULTS = {
+    "temporal_filters": 4,
+    "spatial_filters": 40,
+    "subspacedims": 20,
+    "temp_kernel": 25,
+    "mstgc_temporal_hidden": 64,
+    "mstgc_graph_hidden": 64,
+    "mstgc_fusion_dim": 128,
+    "mstgc_kernel_length": 16,
+    "mstgc_num_heads": 4,
+    "mstgc_cheby_order": 3,
+    "mstgc_dropout": 0.5,
+    "mstgc_num_nodes": 0,
+    "mstgc_graph_k": 4,
+    "mstgc_graph_density": None,
+    "mstgc_time_points": 64,
+    "mstgc_shrinkage": 0.1,
+}
 
 
 def parse_args():
@@ -66,13 +88,15 @@ def parse_args():
                         default="ms_tgc_spddsbn")
     parser.add_argument("--checkpoint-root", default=None)
     parser.add_argument("--results-file", default=None)
+    parser.add_argument("--output-root", default="outputs")
+    parser.add_argument("--master-summary", default=None)
     parser.add_argument("--target-subject", type=int, default=None)
     parser.add_argument(
         "--feature-cache-dir", default=None,
         help=(
-            "Directory containing spd_intermediates.npz and "
-            "spd_intermediates_metadata.csv. If absent, features are extracted "
-            "from the selected checkpoint."
+            "Optional directory containing previously extracted "
+            "spd_intermediates.npz and metadata. By default the script reads "
+            "the original LOSO summary/checkpoint under --output-root."
         ),
     )
     parser.add_argument("--output-dir", default=os.path.join(
@@ -84,9 +108,9 @@ def parse_args():
     parser.add_argument("--target-fs", type=float, default=None)
     parser.add_argument("--rebuild-cache", action="store_true")
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--val-size", type=float, default=0.2)
-    parser.add_argument("--test-size", type=float, default=0.2)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--val-size", type=float, default=None)
+    parser.add_argument("--test-size", type=float, default=None)
     parser.add_argument("--artifact-z", type=float, default=None)
     parser.add_argument("--karcher-tol", type=float, default=1e-7)
     parser.add_argument("--karcher-max-iter", type=int, default=50)
@@ -108,22 +132,22 @@ def parse_args():
             "and metadata in --output-dir after validating center IDs."
         ),
     )
-    parser.add_argument("--temporal-filters", type=int, default=4)
-    parser.add_argument("--spatial-filters", type=int, default=40)
-    parser.add_argument("--subspacedims", type=int, default=20)
-    parser.add_argument("--temp-kernel", type=int, default=25)
-    parser.add_argument("--mstgc-temporal-hidden", type=int, default=64)
-    parser.add_argument("--mstgc-graph-hidden", type=int, default=64)
-    parser.add_argument("--mstgc-fusion-dim", type=int, default=128)
-    parser.add_argument("--mstgc-kernel-length", type=int, default=16)
-    parser.add_argument("--mstgc-num-heads", type=int, default=4)
-    parser.add_argument("--mstgc-cheby-order", type=int, default=3)
-    parser.add_argument("--mstgc-dropout", type=float, default=0.5)
-    parser.add_argument("--mstgc-num-nodes", type=int, default=0)
-    parser.add_argument("--mstgc-graph-k", type=int, default=4)
+    parser.add_argument("--temporal-filters", type=int, default=None)
+    parser.add_argument("--spatial-filters", type=int, default=None)
+    parser.add_argument("--subspacedims", type=int, default=None)
+    parser.add_argument("--temp-kernel", type=int, default=None)
+    parser.add_argument("--mstgc-temporal-hidden", type=int, default=None)
+    parser.add_argument("--mstgc-graph-hidden", type=int, default=None)
+    parser.add_argument("--mstgc-fusion-dim", type=int, default=None)
+    parser.add_argument("--mstgc-kernel-length", type=int, default=None)
+    parser.add_argument("--mstgc-num-heads", type=int, default=None)
+    parser.add_argument("--mstgc-cheby-order", type=int, default=None)
+    parser.add_argument("--mstgc-dropout", type=float, default=None)
+    parser.add_argument("--mstgc-num-nodes", type=int, default=None)
+    parser.add_argument("--mstgc-graph-k", type=int, default=None)
     parser.add_argument("--mstgc-graph-density", type=float, default=None)
-    parser.add_argument("--mstgc-time-points", type=int, default=64)
-    parser.add_argument("--mstgc-shrinkage", type=float, default=0.1)
+    parser.add_argument("--mstgc-time-points", type=int, default=None)
+    parser.add_argument("--mstgc-shrinkage", type=float, default=None)
     return parser.parse_args()
 
 
@@ -155,10 +179,175 @@ def _read_json(path):
         return json.load(handle)
 
 
+def _resolve_feature_cache_dir(path, output_dir):
+    """Validate an explicitly supplied extracted-feature directory."""
+    if path is None:
+        return None
+    path = os.path.abspath(path)
+    if os.path.isdir(path):
+        return path
+    raise FileNotFoundError(
+        "--feature-cache-dir is not an extracted feature directory: {}. "
+        "Remove this argument to extract from the original LOSO checkpoint."
+        .format(path)
+    )
+
+
 def _dataset_name(args):
     if args.dataset == "cog-bci":
         return "cog-bci-{}".format(args.cog_paradigm)
     return args.dataset
+
+
+def _normalize_path(path):
+    return os.path.normcase(os.path.abspath(os.path.normpath(str(path))))
+
+
+def _usable_value(value):
+    if value is None:
+        return None
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+def _matching_master_record(args):
+    master_path = args.master_summary or os.path.join(
+        args.output_root, "master_summary.csv"
+    )
+    args.master_summary = master_path
+    if not os.path.exists(master_path):
+        return {}
+    frame = pd.read_csv(master_path)
+    if "protocol" in frame:
+        frame = frame[frame["protocol"].astype(str) == "loso"]
+    if "dataset" in frame:
+        frame = frame[frame["dataset"].astype(str) == _dataset_name(args)]
+    if "model_type" in frame:
+        frame = frame[frame["model_type"].astype(str) == args.model]
+    if frame.empty:
+        return {}
+    if "output_dir" in frame:
+        populated = frame[frame["output_dir"].map(_usable_value).notna()]
+        exact = populated[populated["output_dir"].astype(str).map(
+            lambda value: _normalize_path(value) == _normalize_path(
+                args.checkpoint_root
+            )
+        )]
+        if not exact.empty:
+            frame = exact
+        elif not populated.empty:
+            return {}
+    return frame.iloc[-1].dropna().to_dict()
+
+
+def _resolve_original_output_inputs(args):
+    if args.checkpoint_root is None:
+        run_name = run_directory_name(
+            _dataset_name(args), "loso", args.model, "spddsbn"
+        )
+        args.checkpoint_root = os.path.join(args.output_root, run_name)
+    if args.results_file is None:
+        args.results_file = os.path.join(args.checkpoint_root, "summary.csv")
+
+    run_record = _matching_master_record(args)
+    args.run_record = run_record
+    for key, default in MODEL_CONFIG_DEFAULTS.items():
+        current = getattr(args, key)
+        if current is None:
+            value = _usable_value(run_record.get(key))
+            setattr(args, key, default if value is None else value)
+    split_defaults = {"seed": 42, "val_size": 0.2, "test_size": 0.2}
+    for key, default in split_defaults.items():
+        current = getattr(args, key)
+        if current is None:
+            value = _usable_value(run_record.get(key))
+            setattr(args, key, default if value is None else value)
+    if args.target_fs is None:
+        value = _usable_value(run_record.get("target_fs"))
+        if value is not None:
+            args.target_fs = float(value)
+    if args.cache is None:
+        value = _usable_value(run_record.get("cache"))
+        if value is not None and os.path.exists(str(value)):
+            args.cache = str(value)
+    if args.artifact_z is None:
+        value = _usable_value(run_record.get("artifact_z"))
+        if value is not None:
+            args.artifact_z = float(value)
+
+    if args.feature_cache_dir is None and not os.path.isdir(args.checkpoint_root):
+        raise FileNotFoundError(
+            "Original LOSO output directory was not found: {}. Expected "
+            "summary.csv and subject_XX/model.pt under this directory. Use "
+            "--checkpoint-root only if the run was saved elsewhere."
+            .format(os.path.abspath(args.checkpoint_root))
+        )
+    print("LOSO output directory:", os.path.abspath(args.checkpoint_root))
+    print("Per-subject results:", os.path.abspath(args.results_file))
+    if run_record:
+        print("Training configuration: matched", os.path.abspath(args.master_summary))
+    else:
+        print("Training configuration: defaults/explicit CLI (no matching master row)")
+
+
+def _validate_selected_result(args, selection):
+    results_file = selection.get("results_file")
+    if not results_file or not os.path.exists(results_file):
+        return {"status": "unavailable_explicit_subject"}
+    frame = pd.read_csv(results_file)
+    rows = frame[pd.to_numeric(
+        frame["subject"], errors="coerce"
+    ) == int(selection["selected_target_subject"])]
+    if "protocol" in rows:
+        rows = rows[rows["protocol"].astype(str) == "loso"]
+    if "dataset" in rows:
+        rows = rows[rows["dataset"].astype(str) == _dataset_name(args)]
+    if "model_type" in rows:
+        rows = rows[rows["model_type"].astype(str) == args.model]
+    if rows.empty:
+        raise ValueError("Selected subject/model is absent from summary.csv")
+    required = {"target_adapt", "target_refit_scope"}
+    missing = required - set(rows.columns)
+    if missing:
+        raise ValueError(
+            "Original summary lacks required SPDDSBN audit columns: {}. "
+            "Use results produced by the current training pipeline."
+            .format(sorted(missing))
+        )
+    enabled = rows["target_adapt"].astype(str).str.lower().isin(
+        ["true", "1", "yes"]
+    )
+    if not bool(enabled.all()):
+        raise ValueError(
+            "Riemannian alignment visualization requires a checkpoint "
+            "evaluated with unlabeled target SPDDSBN adaptation"
+        )
+    scopes = sorted(set(
+        value for value in rows["target_refit_scope"].dropna().astype(str)
+        if value
+    ))
+    if scopes != ["target_only"]:
+        raise ValueError(
+            "Expected target_refit_scope=target_only, found {}".format(scopes)
+        )
+    if args.model == "tsmnet" and "bnorm" in rows:
+        bnorms = set(rows["bnorm"].dropna().astype(str))
+        if bnorms != {"spddsbn"}:
+            raise ValueError("TSMNet visualization requires bnorm=spddsbn")
+    return {
+        "status": "validated_from_summary",
+        "row_count": int(len(rows)),
+        "target_adapt": True,
+        "target_refit_scope": scopes,
+        "best_epochs": (
+            sorted(pd.to_numeric(rows["best_epoch"], errors="coerce")
+                   .dropna().astype(int).unique().tolist())
+            if "best_epoch" in rows else []
+        ),
+    }
 
 
 def _select_representative(results_file, dataset_name, model_type):
@@ -345,6 +534,9 @@ def _checkpoint_path(root, subject):
 
 
 def _model_config(args):
+    graph_density = args.mstgc_graph_density
+    if graph_density is not None:
+        graph_density = float(graph_density)
     return {
         "temporal_filters": int(args.temporal_filters),
         "spatial_filters": int(args.spatial_filters),
@@ -359,7 +551,7 @@ def _model_config(args):
         "mstgc_dropout": float(args.mstgc_dropout),
         "mstgc_num_nodes": int(args.mstgc_num_nodes),
         "mstgc_graph_k": int(args.mstgc_graph_k),
-        "mstgc_graph_density": args.mstgc_graph_density,
+        "mstgc_graph_density": graph_density,
         "mstgc_time_points": int(args.mstgc_time_points),
         "mstgc_shrinkage": float(args.mstgc_shrinkage),
     }
@@ -416,6 +608,8 @@ def _extract_partition(model, model_type, dataset, indices, domains,
 
 def _extract_from_checkpoint(args, selection):
     subject = int(selection["selected_target_subject"])
+    checkpoint = _checkpoint_path(args.checkpoint_root, subject)
+    print("Selected best checkpoint:", checkpoint)
     target_fs = default_target_fs(args.dataset, args.target_fs)
     cache = args.cache or default_cache_path(
         args.dataset, "loso", cog_paradigm=args.cog_paradigm,
@@ -452,7 +646,6 @@ def _extract_from_checkpoint(args, selection):
     model, config = _build_model(
         args, dataset, domains, selected, len(labels), device
     )
-    checkpoint = _checkpoint_path(args.checkpoint_root, subject)
     state, migrations = migrate_legacy_spddsbn_buffers(
         _load_state(checkpoint), model.state_dict()
     )
@@ -506,6 +699,13 @@ def _extract_from_checkpoint(args, selection):
     provenance = {
         "source": "extracted_from_checkpoint",
         "checkpoint": checkpoint,
+        "loso_results_file": os.path.abspath(args.results_file),
+        "master_summary": (
+            os.path.abspath(args.master_summary)
+            if args.master_summary and os.path.exists(args.master_summary)
+            else None
+        ),
+        "matched_master_record": getattr(args, "run_record", {}),
         "dataset_cache": os.path.abspath(cache),
         "model_type": args.model,
         "model_config": config,
@@ -1222,6 +1422,10 @@ def main():
     if args.stress_3d_threshold <= 0.0:
         raise ValueError("--stress-3d-threshold must be positive")
     os.makedirs(args.output_dir, exist_ok=True)
+    args.feature_cache_dir = _resolve_feature_cache_dir(
+        args.feature_cache_dir, args.output_dir
+    )
+    _resolve_original_output_inputs(args)
     random.seed(MAIN_MDS_SEED)
     np.random.seed(MAIN_MDS_SEED)
     torch.manual_seed(MAIN_MDS_SEED)
@@ -1238,6 +1442,9 @@ def main():
     })
 
     selection = _selection_from_args(args)
+    selection["checkpoint_protocol_validation"] = _validate_selected_result(
+        args, selection
+    )
     target_subject = int(selection["selected_target_subject"])
     pre, post, sample_metadata, feature_provenance = _load_or_extract_features(
         args, selection
@@ -1354,6 +1561,19 @@ def main():
         "model_type": args.model,
         "target_subject": target_subject,
         "representative_fold_selection": selection,
+        "original_output_inputs": {
+            "loso_output_directory": os.path.abspath(args.checkpoint_root),
+            "per_subject_results": os.path.abspath(args.results_file),
+            "master_summary": (
+                os.path.abspath(args.master_summary)
+                if args.master_summary and os.path.exists(args.master_summary)
+                else None
+            ),
+            "training_configuration_source": (
+                "matched_master_summary" if getattr(args, "run_record", {})
+                else "explicit_cli_or_project_defaults"
+            ),
+        },
         "feature_provenance": feature_provenance,
         "feature_locations": visualization_model_metadata(args.model),
         "sample_counts": {

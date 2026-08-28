@@ -12,7 +12,7 @@ Main entry points:
 - `MS_TGC_GRAPH_ABLATION.md`: proposed-model architecture, graph construction, leakage controls, commands, and reporting guidance
 - `visualize_spddsbn_pca.py`: generate paper figures B3/B4 from one trained TSMNet-SPDDSBN or MS_TGC_SPDDSBN LOSO checkpoint in a shared source-fitted tangent/PCA space
 - `SPDDSBN_PCA_VISUALIZATION.md`: exact feature locations, leakage controls, command, and reproducibility artifacts for B3/B4
-- `analysis/plot_riemannian_mds.py`: joint AIRM metric-MDS of subject-by-class Frechet centers before/after SPDDSBN
+- `analysis/plot_riemannian_mds.py`: joint AIRM metric-MDS of subject-by-class Frechet centers before/after SPDDSBN, read directly from the original LOSO summary, best checkpoint, and window cache under `outputs/`
 - `RIEMANNIAN_MDS_VISUALIZATION.md`: Riemannian MDS protocol, leakage controls, commands, stress reporting, and outputs
 
 The pipeline uses 1 s non-overlapping windows. Cache construction performs only channel selection, segment selection, filtering, and resampling; robust per-channel normalization is fitted inside each split from source-domain training windows only, then applied to validation and target/test windows. Optional artifact-window rejection can be enabled with `--artifact-z`, using the same source-only normalization. Sampling rates are dataset-aware: STEW stays at its native 128 Hz, while EEGMAT and COG-BCI are resampled from 500 Hz to 250 Hz by default. Use `--target-fs` to override this.
