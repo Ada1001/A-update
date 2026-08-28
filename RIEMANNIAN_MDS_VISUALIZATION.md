@@ -80,6 +80,13 @@ Archive files are not accepted. Non-default model dimensions are restored from
 the matching master-summary row; explicit CLI values take precedence, and
 checkpoint loading remains strict.
 
+Historical checkpoints created before `target_refit_scope` was recorded used
+unlabeled source and target windows in the final SPDDSBN refit. They contain no
+target-label leakage, but they are not target-only adaptation. The script will
+not silently relabel them: either rerun LOSO with the current pipeline, or add
+`--allow-legacy-source-target-refit` to generate a legacy visualization whose
+scope and publication warning are saved in the metadata JSON.
+
 The output directory contains the requested centroid, distance, coordinate,
 metadata, PDF, SVG, and 600 dpi PNG artifacts. A supplementary 3D MDS is
 generated automatically when 2D normalized Stress-1 exceeds the configured

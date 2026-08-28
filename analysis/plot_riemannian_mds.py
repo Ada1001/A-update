@@ -7,6 +7,7 @@ import os
 import platform
 import random
 import sys
+import warnings
 from datetime import datetime, timezone
 
 import matplotlib
@@ -117,6 +118,14 @@ def parse_args():
     parser.add_argument("--stability-seeds", default="7,42,2026,3407,9001")
     parser.add_argument("--stress-3d-threshold", type=float, default=0.15)
     parser.add_argument("--annotate-distances", action="store_true")
+    parser.add_argument(
+        "--allow-legacy-source-target-refit", action="store_true",
+        help=(
+            "Allow checkpoints from the historical unlabeled source+target "
+            "SPDDSBN refit pipeline that predates target_refit_scope metadata. "
+            "The legacy scope is recorded prominently in the output metadata."
+        ),
+    )
     parser.add_argument(
         "--reuse-centroids", action="store_true",
         help=(
@@ -309,13 +318,9 @@ def _validate_selected_result(args, selection):
         rows = rows[rows["model_type"].astype(str) == args.model]
     if rows.empty:
         raise ValueError("Selected subject/model is absent from summary.csv")
-    required = {"target_adapt", "target_refit_scope"}
-    missing = required - set(rows.columns)
-    if missing:
+    if "target_adapt" not in rows:
         raise ValueError(
-            "Original summary lacks required SPDDSBN audit columns: {}. "
-            "Use results produced by the current training pipeline."
-            .format(sorted(missing))
+            "Original summary lacks the required target_adapt audit column"
         )
     enabled = rows["target_adapt"].astype(str).str.lower().isin(
         ["true", "1", "yes"]
@@ -325,11 +330,44 @@ def _validate_selected_result(args, selection):
             "Riemannian alignment visualization requires a checkpoint "
             "evaluated with unlabeled target SPDDSBN adaptation"
         )
-    scopes = sorted(set(
-        value for value in rows["target_refit_scope"].dropna().astype(str)
-        if value
-    ))
-    if scopes != ["target_only"]:
+    scope_evidence = "per_subject_summary"
+    scopes = []
+    if "target_refit_scope" in rows:
+        scopes = sorted(set(
+            value for value in rows["target_refit_scope"].dropna().astype(str)
+            if value
+        ))
+    if not scopes:
+        master_scope = _usable_value(
+            getattr(args, "run_record", {}).get("target_refit_scope")
+        )
+        if master_scope is not None:
+            scopes = sorted(set(
+                value.strip() for value in str(master_scope).split(",")
+                if value.strip()
+            ))
+            scope_evidence = "matched_master_summary"
+    legacy_scope = False
+    if not scopes:
+        if not args.allow_legacy_source_target_refit:
+            raise ValueError(
+                "The selected result predates target_refit_scope metadata. "
+                "In this repository that historical pipeline used unlabeled "
+                "source+target windows for the final SPDDSBN refit. It did not "
+                "use target labels, but it is not the current target-only "
+                "protocol. Re-run the experiment with the current pipeline, "
+                "or pass --allow-legacy-source-target-refit to visualize the "
+                "legacy checkpoint with this limitation recorded."
+            )
+        legacy_scope = True
+        scopes = ["source_plus_target_unlabeled"]
+        scope_evidence = "historical_pipeline_contract_before_d9d0ca0"
+        warnings.warn(
+            "Visualizing a legacy checkpoint whose SPDDSBN refit used "
+            "unlabeled source+target windows; this is not target-only.",
+            UserWarning,
+        )
+    if not legacy_scope and scopes != ["target_only"]:
         raise ValueError(
             "Expected target_refit_scope=target_only, found {}".format(scopes)
         )
@@ -338,10 +376,19 @@ def _validate_selected_result(args, selection):
         if bnorms != {"spddsbn"}:
             raise ValueError("TSMNet visualization requires bnorm=spddsbn")
     return {
-        "status": "validated_from_summary",
+        "status": (
+            "validated_legacy_source_target_unlabeled_refit"
+            if legacy_scope else "validated_target_only_refit"
+        ),
         "row_count": int(len(rows)),
         "target_adapt": True,
         "target_refit_scope": scopes,
+        "target_refit_scope_evidence": scope_evidence,
+        "publication_warning": (
+            "Legacy checkpoint used unlabeled source+target windows during "
+            "final SPDDSBN refit; do not report it as target-only adaptation."
+            if legacy_scope else None
+        ),
         "best_epochs": (
             sorted(pd.to_numeric(rows["best_epoch"], errors="coerce")
                    .dropna().astype(int).unique().tolist())

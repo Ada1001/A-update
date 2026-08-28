@@ -84,14 +84,63 @@ class RiemannianMDSAnalysisTests(unittest.TestCase):
             }]).to_csv(result_path, index=False)
             args = SimpleNamespace(
                 dataset="stew", cog_paradigm="nback",
-                model="ms_tgc_spddsbn",
+                model="ms_tgc_spddsbn", run_record={},
+                allow_legacy_source_target_refit=False,
             )
             validation = _validate_selected_result(args, {
                 "selected_target_subject": 6,
                 "results_file": result_path,
             })
-            self.assertEqual(validation["status"], "validated_from_summary")
+            self.assertEqual(validation["status"], "validated_target_only_refit")
             self.assertEqual(validation["target_refit_scope"], ["target_only"])
+
+    def test_missing_scope_uses_matching_master_summary_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result_path = os.path.join(directory, "summary.csv")
+            pd.DataFrame([{
+                "dataset": "stew", "model_type": "tsmnet",
+                "protocol": "loso", "subject": 6,
+                "target_adapt": True, "bnorm": "spddsbn",
+            }]).to_csv(result_path, index=False)
+            args = SimpleNamespace(
+                dataset="stew", cog_paradigm="nback", model="tsmnet",
+                run_record={"target_refit_scope": "target_only"},
+                allow_legacy_source_target_refit=False,
+            )
+            validation = _validate_selected_result(args, {
+                "selected_target_subject": 6, "results_file": result_path,
+            })
+            self.assertEqual(validation["target_refit_scope"], ["target_only"])
+            self.assertEqual(
+                validation["target_refit_scope_evidence"],
+                "matched_master_summary",
+            )
+
+    def test_legacy_scope_requires_explicit_opt_in_and_is_disclosed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result_path = os.path.join(directory, "summary.csv")
+            pd.DataFrame([{
+                "dataset": "stew", "model_type": "tsmnet",
+                "protocol": "loso", "subject": 6,
+                "target_adapt": True, "bnorm": "spddsbn",
+            }]).to_csv(result_path, index=False)
+            args = SimpleNamespace(
+                dataset="stew", cog_paradigm="nback", model="tsmnet",
+                run_record={}, allow_legacy_source_target_refit=False,
+            )
+            selection = {
+                "selected_target_subject": 6, "results_file": result_path,
+            }
+            with self.assertRaisesRegex(ValueError, "historical pipeline"):
+                _validate_selected_result(args, selection)
+            args.allow_legacy_source_target_refit = True
+            with self.assertWarnsRegex(UserWarning, "legacy checkpoint"):
+                validation = _validate_selected_result(args, selection)
+            self.assertEqual(
+                validation["status"],
+                "validated_legacy_source_target_unlabeled_refit",
+            )
+            self.assertTrue(validation["publication_warning"])
 
     @staticmethod
     def _original_output_args(output_root):
