@@ -90,6 +90,24 @@ DEFAULT_METHODS = [
         "bnorm": None,
     },
 ]
+EXPECTED_MSTGC_PROVENANCE = {
+    "mstgc_mean_ce": {
+        "architecture": "shared_channel_graph_mean_v3",
+        "representation": "mean",
+    },
+    "mstgc_dta_cheb_eudsbn": {
+        "architecture": "shared_channel_graph_mean_v3",
+        "representation": "mean",
+    },
+    "mstgc_dta_cheb_spdbn": {
+        "architecture": "shared_channel_graph_augmented_spd_v3",
+        "representation": "augmented",
+    },
+    "ms_tgc_spddsbn": {
+        "architecture": "shared_channel_graph_augmented_spd_v3",
+        "representation": "augmented",
+    },
+}
 MODEL_DEFAULTS = {
     "temporal_filters": 4,
     "spatial_filters": 40,
@@ -116,7 +134,7 @@ def parse_args():
     )
     parser.add_argument(
         "--datasets", default="stew,cog-bci:nback",
-        help="Comma-separated: stew,eegmat,cog-bci:nback,cog-bci:matb.",
+        help="One or two entries: stew,eegmat,cog-bci:nback,cog-bci:matb.",
     )
     parser.add_argument(
         "--dataset-labels", default="STEW,N-Back",
@@ -215,8 +233,10 @@ def _font_family():
 def _parse_datasets(values, labels):
     raw = [item.strip() for item in values.split(",") if item.strip()]
     display = [item.strip() for item in labels.split(",") if item.strip()]
-    if len(raw) != 2 or len(display) != len(raw):
-        raise ValueError("Fig. 5 requires exactly two datasets and two display labels")
+    if len(raw) not in {1, 2} or len(display) != len(raw):
+        raise ValueError(
+            "Fig. 5 requires one or two datasets and the same number of labels"
+        )
     parsed = []
     for value, label in zip(raw, display):
         parts = value.split(":", 1)
@@ -227,6 +247,23 @@ def _parse_datasets(values, labels):
         if dataset == "cog-bci" and paradigm not in {"nback", "matb"}:
             raise ValueError("COG-BCI paradigm must be nback or matb")
         name = "cog-bci-{}".format(paradigm) if dataset == "cog-bci" else dataset
+        normalized_label = "".join(
+            character for character in label.lower() if character.isalnum()
+        )
+        reserved_labels = {
+            "stew": "stew",
+            "eegmat": "eegmat",
+            "nback": "cog-bci-nback",
+            "cogbcinback": "cog-bci-nback",
+            "matb": "cog-bci-matb",
+            "cogbcimatb": "cog-bci-matb",
+        }
+        claimed_dataset = reserved_labels.get(normalized_label)
+        if claimed_dataset is not None and claimed_dataset != name:
+            raise ValueError(
+                "Display label {!r} identifies {}, but the corresponding "
+                "dataset is {}".format(label, claimed_dataset, name)
+            )
         parsed.append({
             "dataset": dataset,
             "paradigm": paradigm,
@@ -316,8 +353,9 @@ def _matching_master_row(master, dataset_name, method, run_dir):
         exact = frame[frame["output_dir"].astype(str).map(
             lambda value: os.path.normcase(os.path.abspath(value)) == normalized
         )]
-        if not exact.empty:
-            frame = exact
+        if exact.empty:
+            return {}
+        frame = exact
     return {} if frame.empty else frame.iloc[-1].dropna().to_dict()
 
 
@@ -397,14 +435,47 @@ def _split_config(run_info):
 def _validate_comparable_runs(run_infos, methods, args):
     reference = _split_config(run_infos[-1])
     keys = ["seed", "val_size", "test_size", "artifact_z"]
+    frontend_keys = [
+        "mstgc_temporal_hidden", "mstgc_graph_hidden", "mstgc_fusion_dim",
+        "mstgc_kernel_length", "mstgc_num_heads", "mstgc_cheby_order",
+        "mstgc_dropout", "mstgc_num_nodes", "mstgc_graph_k",
+        "mstgc_time_points", "mstgc_graph_density",
+    ]
+    reference_frontend = _model_config(run_infos[-1]["record"])
+    errors = []
     for info, method in zip(run_infos, methods):
         current = _split_config(info)
         differences = [key for key in keys if current[key] != reference[key]]
         if differences:
-            raise ValueError(
-                "{} was trained with a different split/preprocessing config: {}"
-                .format(method["label"], differences)
+            errors.append(
+                "{} has different split/preprocessing fields: {}"
+                .format(method["label"], ", ".join(differences))
             )
+        if method["model_type"] in EXPECTED_MSTGC_PROVENANCE:
+            expected = EXPECTED_MSTGC_PROVENANCE[method["model_type"]]
+            architecture = _usable(info["record"].get("mstgc_architecture"))
+            representation = _usable(info["record"].get("mstgc_representation"))
+            if architecture != expected["architecture"]:
+                errors.append(
+                    "{} architecture is {!r}, expected {!r}; this checkpoint "
+                    "predates or differs from the current v3 comparison"
+                    .format(method["label"], architecture, expected["architecture"])
+                )
+            if representation != expected["representation"]:
+                errors.append(
+                    "{} representation is {!r}, expected {!r}"
+                    .format(method["label"], representation, expected["representation"])
+                )
+            current_frontend = _model_config(info["record"])
+            changed_frontend = [
+                key for key in frontend_keys
+                if current_frontend[key] != reference_frontend[key]
+            ]
+            if changed_frontend:
+                errors.append(
+                    "{} uses different shared-front-end fields: {}"
+                    .format(method["label"], ", ".join(changed_frontend))
+                )
         summary = info["summary"]
         expects_adapt = method["model_type"] in {
             "mstgc_dta_cheb_eudsbn", "ms_tgc_spddsbn",
@@ -414,24 +485,42 @@ def _validate_comparable_runs(run_infos, methods, args):
             and method.get("bnorm") == "spddsbn"
         )
         if "target_adapt" not in summary:
-            raise ValueError("{} summary lacks target_adapt audit data".format(method["label"]))
-        actual = summary["target_adapt"].map(_as_bool)
-        if expects_adapt and not bool(actual.all()):
-            raise ValueError("{} checkpoint was not target-adapted".format(method["label"]))
-        if not expects_adapt and bool(actual.any()):
-            raise ValueError("{} unexpectedly reports target adaptation".format(method["label"]))
+            errors.append("{} summary lacks target_adapt audit data".format(method["label"]))
+            actual = pd.Series(dtype=bool)
+        else:
+            actual = summary["target_adapt"].map(_as_bool)
+        if expects_adapt and (actual.empty or not bool(actual.all())):
+            errors.append("{} checkpoint was not target-adapted".format(method["label"]))
+        if not expects_adapt and not actual.empty and bool(actual.any()):
+            errors.append("{} unexpectedly reports target adaptation".format(method["label"]))
         if expects_adapt:
             scopes = set(summary.get("target_refit_scope", pd.Series(dtype=str)).dropna().astype(str))
+            scope_evidence = "summary.csv"
+            if not scopes:
+                master_scope = _usable(info["record"].get("target_refit_scope"))
+                if master_scope is not None:
+                    scopes = {str(master_scope)}
+                    scope_evidence = "master_summary.csv"
             if scopes != {"target_only"}:
                 if not args.allow_legacy_refit:
-                    raise ValueError(
+                    errors.append(
                         "{} must report target_refit_scope=target_only; found {}"
                         .format(method["label"], sorted(scopes))
                     )
-                warnings.warn(
-                    "{} uses legacy refit scope {}".format(method["label"], sorted(scopes)),
-                    UserWarning,
-                )
+                else:
+                    warnings.warn(
+                        "{} uses unaudited legacy refit scope {}"
+                        .format(method["label"], sorted(scopes)), UserWarning,
+                    )
+            info["refit_scope_audit"] = {
+                "values": sorted(scopes), "evidence": scope_evidence,
+            }
+    if errors:
+        raise ValueError(
+            "Fig. 5 run audit failed:\n- " + "\n- ".join(errors)
+            + "\nRerun the listed methods with the current training pipeline; "
+              "do not mix legacy and v3 checkpoints in the publication figure."
+        )
     return reference
 
 
@@ -1050,7 +1139,8 @@ def main():
             "metric_subjects": metric_subjects,
             "runs": [
                 {"method": method["label"], "run_dir": info["run_dir"],
-                 "summary": info["summary_path"], "record": info["record"]}
+                 "summary": info["summary_path"], "record": info["record"],
+                 "refit_scope_audit": info.get("refit_scope_audit")}
                 for method, info in zip(methods, run_infos)
             ],
         }
@@ -1142,10 +1232,14 @@ def main():
         os.path.join(args.output_dir, "fig5_plot_sample_manifest.csv"), index=False
     )
 
-    fig = plt.figure(figsize=FIGURE_SIZE)
+    single_dataset = len(datasets) == 1
+    figure_size = (FIGURE_SIZE[0], 2.85) if single_dataset else FIGURE_SIZE
+    fig = plt.figure(figsize=figure_size)
     outer = fig.add_gridspec(
-        2, 5, width_ratios=[1, 1, 1, 1, 1.38],
-        left=0.055, right=0.995, bottom=0.105, top=0.84,
+        len(datasets), 5, width_ratios=[1, 1, 1, 1, 1.38],
+        left=0.055, right=0.995,
+        bottom=0.16 if single_dataset else 0.105,
+        top=0.78 if single_dataset else 0.84,
         wspace=0.18, hspace=0.18,
     )
     for dataset_index, dataset in enumerate(datasets):
@@ -1170,10 +1264,11 @@ def main():
         ratio_ax, aggregate, methods, datasets, "separation_ratio",
         r"(c) Class/domain separation $\uparrow$", True,
     )
-    domain_ax.legend(
-        loc="upper right", frameon=False, fontsize=5.8,
-        handlelength=1.5, borderpad=0.1, labelspacing=0.25,
-    )
+    if len(datasets) > 1:
+        domain_ax.legend(
+            loc="upper right", frameon=False, fontsize=5.8,
+            handlelength=1.5, borderpad=0.1, labelspacing=0.25,
+        )
 
     class_count = max(
         panel_data[key]["metadata"]["class_id"].nunique() for key in panel_data

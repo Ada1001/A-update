@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,7 +10,9 @@ import pandas as pd
 
 from analysis.fig5_representation_alignment import (
     _load_methods,
+    _parse_datasets,
     _save_figure,
+    _validate_comparable_runs,
     balanced_sample,
     high_dimensional_metrics,
     reduce_to_2d,
@@ -92,6 +95,58 @@ class Fig5RepresentationAlignmentTests(unittest.TestCase):
             loaded = _load_methods(path)
         self.assertEqual(len(loaded), 4)
         self.assertTrue(all(item["model_type"] == "tsmnet" for item in loaded))
+
+    def test_reserved_dataset_label_mismatch_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "identifies eegmat"):
+            _parse_datasets("stew,cog-bci:nback", "STEW,EEGMAT")
+
+    def test_single_dataset_figure_input_is_supported(self):
+        parsed = _parse_datasets("cog-bci:nback", "N-Back")
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["name"], "cog-bci-nback")
+
+    def _comparable_run_infos(self):
+        methods = _load_methods(None)
+        expected = [
+            ("shared_channel_graph_mean_v3", "mean", False),
+            ("shared_channel_graph_mean_v3", "mean", True),
+            ("shared_channel_graph_augmented_spd_v3", "augmented", False),
+            ("shared_channel_graph_augmented_spd_v3", "augmented", True),
+        ]
+        infos = []
+        for index, (architecture, representation, adapted) in enumerate(expected):
+            record = {
+                "seed": 42, "val_size": 0.2, "test_size": 0.2,
+                "mstgc_architecture": architecture,
+                "mstgc_representation": representation,
+            }
+            if adapted:
+                record["target_refit_scope"] = "target_only"
+            infos.append({
+                "record": record,
+                "summary": pd.DataFrame({"target_adapt": [adapted, adapted]}),
+                "run_dir": "run_{}".format(index),
+                "summary_path": "summary_{}.csv".format(index),
+            })
+        return methods, infos
+
+    def test_run_audit_accepts_master_scope_fallback(self):
+        methods, infos = self._comparable_run_infos()
+        result = _validate_comparable_runs(
+            infos, methods, SimpleNamespace(allow_legacy_refit=False)
+        )
+        self.assertEqual(result["seed"], 42)
+        self.assertEqual(
+            infos[1]["refit_scope_audit"]["evidence"], "master_summary.csv"
+        )
+
+    def test_run_audit_rejects_missing_v3_provenance(self):
+        methods, infos = self._comparable_run_infos()
+        infos[1]["record"].pop("mstgc_architecture")
+        with self.assertRaisesRegex(ValueError, "predates or differs"):
+            _validate_comparable_runs(
+                infos, methods, SimpleNamespace(allow_legacy_refit=True)
+            )
 
     def test_figure_writer_emits_pdf_png_and_svg(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -44,6 +44,16 @@ each method is standardized with source-only statistics before comparison.
   CI over the intersection of completed LOSO target subjects for all methods.
 - Target labels are used only after training for balanced plotting and
   class-conditional metrics.
+- Default MS-TGC comparisons require the current v3 architecture provenance
+  in `master_summary.csv`. Legacy checkpoints without architecture and
+  representation records are rejected rather than silently mixed with v3.
+- Domain-adapted methods require `target_refit_scope=target_only`. Evidence is
+  read from each run's `summary.csv`, with its exactly matched master-summary
+  row used only as a fallback. `--allow-legacy-refit` is intended for
+  exploratory legacy plots, not the publication figure.
+- The master-summary row must match the selected run's `output_dir` exactly;
+  graph-density and Chebyshev sensitivity runs are never substituted for the
+  standard model run.
 - The script never modifies coordinates or axes to force a monotonic trend.
 
 Domain discrepancy is the mean class-conditional source-target centroid RMS
@@ -59,29 +69,49 @@ Install the preferred optional reducer once:
 pip install -r requirements-analysis.txt
 ```
 
-Generate STEW and N-Back Fig. 5 from the original LOSO outputs:
+Generate each dataset independently. Every command produces its own complete
+1x4 embedding row and two quantitative panels, which can be composed later
+without mixing data in the analysis script.
+
+STEW:
 
 ```bash
 python analysis/fig5_representation_alignment.py \
-  --datasets stew,cog-bci:nback \
-  --dataset-labels STEW,N-Back \
+  --datasets stew \
+  --dataset-labels STEW \
   --output-root outputs \
   --master-summary outputs/master_summary.csv \
   --metric-scope all \
   --max-points-per-group 200 \
   --reducer auto \
-  --output-dir results
+  --output-dir results/fig5_stew
 ```
 
-Replace the second row with EEGMAT without changing the plotting code:
+N-Back:
 
 ```bash
 python analysis/fig5_representation_alignment.py \
-  --datasets stew,eegmat \
-  --dataset-labels STEW,EEGMAT \
+  --datasets cog-bci:nback \
+  --dataset-labels N-Back \
+  --output-root outputs \
+  --master-summary outputs/master_summary.csv \
   --metric-scope all \
-  --output-dir results
+  --max-points-per-group 200 \
+  --reducer auto \
+  --output-dir results/fig5_nback
 ```
+
+EEGMAT uses the same command with `--datasets eegmat`,
+`--dataset-labels EEGMAT`, and `--output-dir results/fig5_eegmat`.
+Two-dataset output remains supported for backward compatibility. Dataset
+labels are checked against reserved names, so N-Back cannot accidentally be
+published under the EEGMAT label.
+
+The figure extractor reads each fold's saved best `model.pt`; it does not
+retrain a valid run. Retraining is required only when a method is missing, was
+trained with a different architecture/front end, or lacks auditable target
+refit provenance. A checkpoint alone cannot recover which windows were used to
+fit its saved domain statistics.
 
 For a quick pipeline check, use `--metric-scope representative`. This is not
 the recommended quantitative panel for the paper.
