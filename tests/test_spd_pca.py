@@ -15,7 +15,10 @@ from src.cl_tsmnet.spd_pca import (
     tangent_vectorize,
     validate_spd_matrices,
 )
-from src.cl_tsmnet.spd_visualization_adapters import extract_spd_intermediates
+from src.cl_tsmnet.spd_visualization_adapters import (
+    extract_alignment_representation,
+    extract_spd_intermediates,
+)
 from src.cl_tsmnet.training import build_ms_tgc_spddsbn, build_tsmnet
 
 
@@ -151,6 +154,48 @@ class SPDPCAForwardContractTests(unittest.TestCase):
         self.assertTrue(torch.all(
             torch.linalg.eigvalsh(intermediates["spd_post_bn"]) > 0
         ))
+
+    def test_alignment_adapter_exports_real_preclassifier_features(self):
+        common = dict(
+            project_root=os.getcwd(), nchannels=4, nsamples=32, nclasses=2,
+            domains=np.asarray([0, 1]), temporal_hidden=4,
+            graph_hidden=4, fusion_dim=6, kernel_length=5,
+            num_heads=2, cheby_order=2, dropout=0.0,
+            graph_time_points=8, subspacedims=3,
+            covariance_shrinkage=0.1,
+        )
+        windows = torch.randn(4, 4, 32)
+        domains = torch.tensor([0, 0, 1, 1])
+        expectations = [
+            ("mstgc_mean_ce", 4, "mean", None),
+            ("mstgc_dta_cheb_eudsbn", 4, "mean", "eudsbn"),
+            ("mstgc_dta_cheb_spdbn", 6, "augmented", "spdbn"),
+            ("ms_tgc_spddsbn", 6, "augmented", "spddsbn"),
+        ]
+        for variant, width, representation, normalization in expectations:
+            model = build_ms_tgc_spddsbn(variant=variant, **common).eval()
+            with torch.no_grad():
+                features, metadata = extract_alignment_representation(
+                    model, windows, domains, variant
+                )
+            with self.subTest(variant=variant):
+                self.assertEqual(tuple(features.shape), (4, width))
+                self.assertEqual(metadata["representation"], representation)
+                self.assertEqual(metadata["normalization"], normalization)
+                self.assertTrue(torch.all(torch.isfinite(features)))
+
+        tsmnet = build_tsmnet(
+            os.getcwd(), nchannels=4, nsamples=32, nclasses=2,
+            domains=np.asarray([0, 1]), temporal_filters=2,
+            spatial_filters=5, subspacedims=3, temp_kernel=7,
+            bnorm="spddsbn",
+        ).eval()
+        with torch.no_grad():
+            features, metadata = extract_alignment_representation(
+                tsmnet, windows, domains, "tsmnet"
+            )
+        self.assertEqual(tuple(features.shape), (4, 6))
+        self.assertEqual(metadata["normalization"], "spddsbn")
 
     def test_spddsbn_training_keeps_registered_buffer_shapes(self):
         model = build_ms_tgc_spddsbn(

@@ -70,6 +70,17 @@ MSTGC_TARGET_ADAPT_MODEL_TYPES = [
 ]
 
 
+def _mstgc_architecture_name(model):
+    representation = str(getattr(model, "representation", ""))
+    if representation == "mean":
+        return "shared_channel_graph_mean_v3"
+    if representation == "covariance":
+        return "shared_channel_graph_covariance_spd_v3"
+    if representation == "augmented":
+        return "shared_channel_graph_augmented_spd_v3"
+    return "shared_channel_graph_unknown_v3"
+
+
 class EEGWindowDataset(Dataset):
     def __init__(self, x, y, d, indices, augment=False, noise_std=0.03,
                  shift_samples=8, channel_dropout=0.05, normalizer=None):
@@ -1673,7 +1684,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         ),
         "val_stat_refit": bool(val_stat_refit),
         "mstgc_architecture": (
-            "shared_channel_graph_augmented_spd_v3"
+            _mstgc_architecture_name(model)
             if model_type in MSTGC_MODEL_TYPES else ""
         ),
         "mstgc_kernel_samples": (

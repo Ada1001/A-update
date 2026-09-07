@@ -135,6 +135,13 @@ is covariance-only versus augmented SPDDSBN because both have the same
 20-dimensional SPD output and 210-dimensional tangent classifier; only the
 first-order mean embedding differs.
 
+For `mstgc_cov_spddsbn`, observations are explicitly centered before the
+shrinkage covariance is formed. Its SPD input is therefore invariant to a
+constant per-feature shift and contains no explicit mean block. The comparison
+must use the same split, seed, graph settings, shrinkage, optimizer, and target
+adaptation setting as `ms_tgc_spddsbn`; changing any of these would confound the
+effect of adding first-order information.
+
 ## Module ablation after the augmented-SPD redesign
 
 ### Temporal modeling ablation
@@ -170,6 +177,31 @@ The required primary module set is now:
 | `mstgc_wo_cheb` | channel graph propagation removed |
 | `mstgc_wo_channel_attention` | learned reliability replaced by fixed `1/C` reliability |
 | `mstgc_wo_spddsbn` | SPDDSBN removed while augmented SPD is retained |
+
+### Mean-CE versus w/o SPDDSBN
+
+These two variants share the temporal, graph, and channel-reliability front
+end, but they are not the same model and do not answer the same question:
+
+| Model | Statistics retained | Geometry before CE | Target-statistics update |
+|---|---|---|---|
+| `mstgc_mean_ce` | first-order mean only | direct Euclidean feature vector | none |
+| `mstgc_wo_spddsbn` | mean and shrinkage covariance | augmented SPD, BiMap, ReEig, then LogEig tangent vector | none |
+
+`mstgc_wo_spddsbn` removes only the SPD domain-specific normalization from the
+full model. It still uses the augmented SPD matrix and the remaining manifold
+pipeline, so it is the controlled ablation for the contribution of SPDDSBN.
+`mstgc_mean_ce` additionally removes covariance, augmentation, BiMap, ReEig,
+and LogEig; it is therefore a representation ablation rather than an
+SPDDSBN-only ablation. Cross-entropy is applied to Euclidean logits in both
+cases, but only `mstgc_wo_spddsbn` reaches those logits through an SPD manifold
+representation and tangent-space mapping.
+
+For a clean SPDDSBN comparison, report `mstgc_wo_spddsbn` against
+`ms_tgc_spddsbn` with identical splits, seeds, and hyperparameters. Use
+`mstgc_mean_ce`, `mstgc_cov_spddsbn`, and `mstgc_augspd_spddsbn` as the separate
+statistical-representation comparison; do not interpret Mean-CE versus the
+full model as the isolated effect of second-order information.
 
 Use `--mstgc-shrinkage 0`, `0.05`, `0.1`, and `0.2` as a sensitivity analysis,
 not as four extra named architectures. The prespecified primary value remains

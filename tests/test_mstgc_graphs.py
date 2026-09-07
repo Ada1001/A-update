@@ -10,6 +10,7 @@ from src.cl_tsmnet.ms_tgc_spddsbn import ChebyGraphSequenceLayer
 from src.cl_tsmnet.mdtn_gmda import ChebyNetLayer
 from src.cl_tsmnet.training import (
     _mstgc_spatial_prior,
+    _mstgc_architecture_name,
     build_mstgc_graph_adjacencies,
     build_ms_tgc_spddsbn,
     fit_source_normalizer,
@@ -328,6 +329,73 @@ class MSTGCGraphTests(unittest.TestCase):
         self.assertEqual(full.spd_branch.spd_input_dim, 5)
         self.assertEqual(tuple(full.spd_branch.spdnet[0].W.shape), (1, 5, 3))
         self.assertEqual(covariance.spd_branch.latent_dim, full.spd_branch.latent_dim)
+
+    def test_mean_ce_and_without_spddsbn_use_distinct_representation_paths(self):
+        common = dict(
+            project_root=os.getcwd(), nchannels=4, nsamples=32, nclasses=2,
+            domains=np.asarray([0, 1]), temporal_hidden=4, graph_hidden=4,
+            fusion_dim=6, kernel_length=4, num_heads=2, cheby_order=2,
+            dropout=0.0, graph_time_points=8, subspacedims=3,
+            covariance_shrinkage=0.1,
+        )
+        mean_ce = build_ms_tgc_spddsbn(
+            variant="mstgc_mean_ce", **common
+        )
+        without_spddsbn = build_ms_tgc_spddsbn(
+            variant="mstgc_wo_spddsbn", **common
+        )
+
+        self.assertFalse(mean_ce.use_spd)
+        self.assertIsNone(mean_ce.spd_branch)
+        self.assertEqual(mean_ce.representation, "mean")
+        self.assertEqual(mean_ce.readout[1].in_features, 4)
+        self.assertEqual(
+            _mstgc_architecture_name(mean_ce),
+            "shared_channel_graph_mean_v3",
+        )
+
+        self.assertTrue(without_spddsbn.use_spd)
+        self.assertIsNotNone(without_spddsbn.spd_branch)
+        self.assertEqual(without_spddsbn.representation, "augmented")
+        self.assertEqual(without_spddsbn.spd_branch.spd_input_dim, 5)
+        self.assertFalse(hasattr(without_spddsbn.spd_branch, "spdbnorm"))
+        self.assertFalse(hasattr(without_spddsbn.spd_branch, "spddsbnorm"))
+        self.assertEqual(without_spddsbn.readout[1].in_features, 6)
+        self.assertEqual(
+            _mstgc_architecture_name(without_spddsbn),
+            "shared_channel_graph_augmented_spd_v3",
+        )
+
+    def test_covariance_ablation_removes_explicit_first_order_information(self):
+        common = dict(
+            project_root=os.getcwd(), nchannels=4, nsamples=32, nclasses=2,
+            domains=np.asarray([0, 1]), temporal_hidden=4, graph_hidden=4,
+            fusion_dim=6, kernel_length=4, num_heads=2, cheby_order=2,
+            dropout=0.0, graph_time_points=8, subspacedims=3,
+            covariance_shrinkage=0.1,
+        )
+        covariance = build_ms_tgc_spddsbn(
+            variant="mstgc_cov_spddsbn", **common
+        )
+        augmented = build_ms_tgc_spddsbn(
+            variant="mstgc_augspd_spddsbn", **common
+        )
+        maps = torch.randn(3, 4, 4, 8, dtype=torch.double)
+        feature_shift = torch.tensor(
+            [0.7, -1.2, 2.1, 0.4], dtype=torch.double
+        ).view(1, 1, 4, 1)
+
+        covariance_before = covariance.spd_branch.build_spd(maps)
+        covariance_after = covariance.spd_branch.build_spd(maps + feature_shift)
+        augmented_before = augmented.spd_branch.build_spd(maps)
+        augmented_after = augmented.spd_branch.build_spd(maps + feature_shift)
+
+        self.assertTrue(torch.allclose(
+            covariance_before, covariance_after, atol=1e-10, rtol=1e-10
+        ))
+        self.assertFalse(torch.allclose(
+            augmented_before, augmented_after, atol=1e-8, rtol=1e-8
+        ))
 
     def test_graph_parameters_follow_the_declared_update_policy(self):
         torch.manual_seed(41)

@@ -613,6 +613,37 @@ class MSTGCSPDDSBN(nn.Module):
             latent = self.eudsbnorm(latent, domains.to(self.graph_device))
         return latent
 
+    def extract_alignment_representation(self, x, domains):
+        """Return the actual feature vector consumed by the classifier head.
+
+        Mean variants expose their first-order vector after any EuDSBN layer,
+        while SPD variants expose the LogEig tangent vector after their chosen
+        SPD normalization. This analysis-only path does not read labels.
+        """
+        maps = self._weighted_graph_maps(x)
+        if self.use_spd:
+            latent = self.spd_branch(maps, domains)
+            location = "post_spd_normalization_logeig_tangent"
+        else:
+            latent = self._first_order_readout(
+                maps, domains, apply_dsbn=True
+            )
+            location = (
+                "post_euclidean_dsbn_first_order_mean"
+                if self.eudsbnorm is not None
+                else "first_order_mean"
+            )
+        normalization = None
+        if self.eudsbnorm is not None:
+            normalization = "eudsbn"
+        elif self.spd_branch is not None:
+            normalization = getattr(self.spd_branch, "bnorm", None)
+        return latent.to(self.graph_device, dtype=torch.float32), {
+            "location": location,
+            "representation": self.representation,
+            "normalization": normalization,
+        }
+
     def forward(self, x, d, return_intermediates=False):
         maps = self._weighted_graph_maps(x)
         if self.use_spd:

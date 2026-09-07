@@ -3,6 +3,16 @@
 
 MS_TGC_MODEL_TYPES = {"ms_tgc_spddsbn", "mstgc_augspd_spddsbn"}
 SUPPORTED_SPD_VISUALIZATION_MODELS = MS_TGC_MODEL_TYPES | {"tsmnet"}
+MSTGC_ALIGNMENT_MODELS = {
+    "mstgc_mean_ce",
+    "mstgc_dta_cheb_eudsbn",
+    "mstgc_dta_cheb_spdmbn",
+    "mstgc_dta_cheb_spdbn",
+    "mstgc_wo_spddsbn",
+    "ms_tgc_spddsbn",
+    "mstgc_augspd_spddsbn",
+}
+SUPPORTED_ALIGNMENT_MODELS = MSTGC_ALIGNMENT_MODELS | {"tsmnet"}
 
 
 def extract_spd_intermediates(model, windows, domains, model_type):
@@ -57,4 +67,27 @@ def visualization_model_metadata(model_type):
         "No SPD visualization metadata is registered for model {!r}".format(
             model_type
         )
+    )
+
+
+def extract_alignment_representation(model, windows, domains, model_type):
+    """Extract the trained representation immediately before classification."""
+    model_type = str(model_type)
+    if model_type == "tsmnet":
+        output = model(windows, domains, return_latent=True)
+        if not isinstance(output, tuple) or len(output) != 2:
+            raise RuntimeError(
+                "TSMNet alignment forward must return (logits, latent)"
+            )
+        _, latent = output
+        return latent.float(), {
+            "location": "TSMNet LogEig output after configured normalization",
+            "representation": "covariance_spd_tangent",
+            "normalization": str(getattr(model, "bnorm_", None)),
+        }
+    if model_type in MSTGC_ALIGNMENT_MODELS:
+        return model.extract_alignment_representation(windows, domains)
+    raise ValueError(
+        "No alignment-representation adapter is registered for model {!r}"
+        .format(model_type)
     )
