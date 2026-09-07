@@ -644,6 +644,17 @@ class MSTGCSPDDSBN(nn.Module):
             "normalization": normalization,
         }
 
+    def extract_graph_analysis_features(self, x):
+        """Return temporal and post-graph channel maps without aggregation."""
+        temporal_maps, _ = self.temporal(
+            x.to(self.graph_device, dtype=torch.float32)
+        )
+        graph_maps = (
+            self.graph(temporal_maps)
+            if self.graph is not None else temporal_maps
+        )
+        return temporal_maps, graph_maps
+
     def forward(self, x, d, return_intermediates=False):
         maps = self._weighted_graph_maps(x)
         if self.use_spd:

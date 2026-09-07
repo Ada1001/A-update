@@ -458,9 +458,9 @@ def _load_state(path):
     return state
 
 
-def _build_model(dataset, domains, selected, method, config, device):
+def _build_model(dataset, domains, selected, source_train, method, config, device):
     shape = dataset["x"].shape
-    labels = np.unique(dataset["y"][selected]).astype(np.int64)
+    labels = np.unique(dataset["y"][source_train]).astype(np.int64)
     nclasses = int(len(labels))
     if method["model_type"] == "tsmnet":
         model = build_tsmnet(
@@ -576,7 +576,10 @@ def load_feature_set(dataset_context, method, run_info, subject, split_context, 
         split_context["source_ids"], split_context["val_ids"],
         split_context["target_ids"],
     ]).astype(np.int64)
-    model = _build_model(dataset, domains, selected, method, config, args.device_object)
+    model = _build_model(
+        dataset, domains, selected, split_context["source_ids"],
+        method, config, args.device_object
+    )
     state, migrations = migrate_legacy_spddsbn_buffers(
         _load_state(checkpoint), model.state_dict()
     )

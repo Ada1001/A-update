@@ -17,7 +17,9 @@ from src.cl_tsmnet.spd_pca import (
 )
 from src.cl_tsmnet.spd_visualization_adapters import (
     extract_alignment_representation,
+    extract_graph_analysis_features,
     extract_spd_intermediates,
+    extract_static_channel_interaction,
 )
 from src.cl_tsmnet.training import build_ms_tgc_spddsbn, build_tsmnet
 
@@ -196,6 +198,53 @@ class SPDPCAForwardContractTests(unittest.TestCase):
             )
         self.assertEqual(tuple(features.shape), (4, 6))
         self.assertEqual(metadata["normalization"], "spddsbn")
+
+    def test_graph_analysis_adapters_distinguish_adjacency_from_proxy(self):
+        windows = torch.randn(4, 4, 32)
+        domains = torch.tensor([0, 0, 1, 1])
+        mstgc = build_ms_tgc_spddsbn(
+            os.getcwd(), nchannels=4, nsamples=32, nclasses=2,
+            domains=np.asarray([0, 1]), temporal_hidden=4,
+            graph_hidden=4, fusion_dim=6, kernel_length=5,
+            num_heads=2, cheby_order=2, dropout=0.0,
+            graph_time_points=8, subspacedims=3,
+            covariance_shrinkage=0.1, variant="ms_tgc_spddsbn",
+        ).eval()
+        with torch.no_grad():
+            adjacency, graph_meta = extract_static_channel_interaction(
+                mstgc, "ms_tgc_spddsbn"
+            )
+            temporal, response, response_meta = extract_graph_analysis_features(
+                mstgc, windows, domains, "ms_tgc_spddsbn"
+            )
+        self.assertEqual(tuple(adjacency.shape), (4, 4))
+        self.assertTrue(torch.allclose(adjacency, adjacency.t()))
+        self.assertTrue(graph_meta["used_for_message_passing"])
+        self.assertEqual(tuple(temporal.shape), (4, 4, 4, 8))
+        self.assertEqual(tuple(response.shape), (4, 4, 4, 8))
+        self.assertEqual(
+            response_meta["interaction_kind"], "adaptive_chebyshev_adjacency"
+        )
+
+        tsmnet = build_tsmnet(
+            os.getcwd(), nchannels=4, nsamples=32, nclasses=2,
+            domains=np.asarray([0, 1]), temporal_filters=2,
+            spatial_filters=5, subspacedims=3, temp_kernel=7,
+            bnorm="spddsbn",
+        ).eval()
+        with torch.no_grad():
+            proxy, proxy_meta = extract_static_channel_interaction(
+                tsmnet, "tsmnet"
+            )
+            temporal, response, response_meta = extract_graph_analysis_features(
+                tsmnet, windows, domains, "tsmnet"
+            )
+        self.assertEqual(tuple(proxy.shape), (4, 4))
+        self.assertFalse(proxy_meta["used_for_message_passing"])
+        self.assertIn("proxy", proxy_meta["interaction_kind"])
+        self.assertEqual(tuple(temporal.shape), (4, 4, 2, 32))
+        self.assertEqual(tuple(response.shape), (4, 4, 2, 32))
+        self.assertIn("proxy", response_meta["interaction_kind"])
 
     def test_spddsbn_training_keeps_registered_buffer_shapes(self):
         model = build_ms_tgc_spddsbn(
