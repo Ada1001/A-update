@@ -30,6 +30,36 @@ All four retain the same multi-scale temporal, adaptive Chebyshev graph, and
 channel-reliability front end. Their final feature dimensions can differ, so
 each method is standardized with source-only statistics before comparison.
 
+The exported vectors are the inputs to `readout`, before its LayerNorm,
+Linear projection to 128 dimensions, GELU, and dropout. They are not the
+128-dimensional inputs to the final linear classifier.
+
+This is a method comparison, not a normalization-only controlled ablation:
+Mean-EuDSBN has per-domain trainable affine parameters, whereas SPDDSBN shares
+its learned scalar dispersion across domains and fixes the output mean.
+Unseen EuDSBN domains retain their initialized affine parameters because
+unlabeled refitting updates statistics only. The Mean-to-AugSPD comparison
+also changes representation dimension and introduces BiMap/ReEig/LogEig.
+
+### EuDSBN refit correction
+
+`DomainBatchNorm1d.refit_domain_stats` now replaces the supplied domains'
+running mean and unbiased variance with full-domain estimates, preserving
+affine parameters, other domains, and train/eval mode. Previously it reset
+the buffers and made one update with momentum 0.1, retaining 90% of the
+default mean/variance. For example, a target mean of 10 was saved as 1.
+EuDSBN runs made before this correction should be retrained: the correction
+also affects validation-domain normalization and hence checkpoint selection.
+Changing CSV provenance or only rerunning the plotting script does not
+repair those saved training results.
+
+Model-contract checks, including one-epoch synthetic training of all four
+variants, can be run from the project root:
+
+```bash
+python -m pytest tests/test_fig5_model_contract.py tests/test_mstgc_graphs.py tests/test_fig5_representation_alignment.py tests/test_loso_protocol.py tests/test_spd_domain_refit.py -q
+```
+
 ## Protocol safeguards
 
 - The representative target subject is selected only from the full

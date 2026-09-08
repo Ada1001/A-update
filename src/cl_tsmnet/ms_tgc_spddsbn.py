@@ -282,8 +282,7 @@ class DomainBatchNorm1d(nn.Module):
         return out
 
     def refit_domain_stats(self, features, domains):
-        was_training = self.training
-        self.train()
+        """Replace each supplied domain's buffers with full-domain moments."""
         with torch.no_grad():
             cpu_domains = domains.detach().cpu().long()
             for domain in torch.unique(cpu_domains):
@@ -291,10 +290,11 @@ class DomainBatchNorm1d(nn.Module):
                 if values.shape[0] < 2:
                     continue
                 layer = self._layer(int(domain))
-                layer.reset_running_stats()
-                layer.train()
-                layer(values)
-        self.train(was_training)
+                layer.running_mean.copy_(values.mean(dim=0))
+                # Match BatchNorm's running-variance convention, without
+                # blending the full-domain estimate with reset defaults.
+                layer.running_var.copy_(values.var(dim=0, unbiased=True))
+                layer.num_batches_tracked.fill_(1)
 
 
 class GraphSPDManifoldHead(nn.Module):
