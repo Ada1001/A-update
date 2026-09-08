@@ -1,13 +1,18 @@
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import torch
 
 from analysis.fig6_graph_pattern_analysis import (
     _dynamic_graphs,
+    _extract_maps,
+    _resolve_run,
     _save_figure,
     _stable_edges,
     compute_edge_stability,
@@ -23,6 +28,45 @@ from analysis.fig6_graph_pattern_analysis import (
 
 
 class Fig6GraphPatternAnalysisTests(unittest.TestCase):
+    def test_run_configuration_matches_output_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = os.path.join(directory, "stew_loso_ms_tgc_spddsbn")
+            os.makedirs(run_dir)
+            pd.DataFrame({"subject": [1, 2]}).to_csv(
+                os.path.join(run_dir, "summary.csv"), index=False
+            )
+            args = SimpleNamespace(
+                output_root=directory, model="ms_tgc_spddsbn",
+                allow_missing_master_config=False,
+            )
+            master = pd.DataFrame([
+                {"dataset": "stew", "protocol": "loso", "model_type": args.model,
+                 "output_dir": run_dir, "mstgc_cheby_order": 3},
+                {"dataset": "stew", "protocol": "loso", "model_type": args.model,
+                 "output_dir": run_dir + "_chebk4", "mstgc_cheby_order": 4},
+            ])
+            info = _resolve_run({"name": "stew", "display_name": "STEW"}, args, master)
+            self.assertEqual(info["record"]["mstgc_cheby_order"], 3)
+            with self.assertRaisesRegex(ValueError, "No matching master-summary"):
+                _resolve_run({"name": "stew", "display_name": "STEW"}, args, master.iloc[1:])
+
+    def test_response_only_extraction_preserves_responses(self):
+        dataset = {"x": np.ones((5, 4, 8), dtype=np.float32)}
+        args = SimpleNamespace(batch_size=2, device_object=torch.device("cpu"),
+                               model="ms_tgc_spddsbn")
+        normalizer = SimpleNamespace(transform_array=lambda values: values)
+        def extract(model, windows, domains, model_type):
+            maps = windows[:, :, None, :].repeat(1, 1, 3, 1)
+            return maps, maps * 2, {"location": "test"}
+        with patch("analysis.fig6_graph_pattern_analysis.extract_graph_analysis_features",
+                   side_effect=extract):
+            full = _extract_maps(None, dataset, np.arange(5), np.zeros(5), normalizer, args)
+            compact = _extract_maps(None, dataset, np.arange(5), np.zeros(5), normalizer,
+                                    args, collect_temporal=False)
+        self.assertIsNone(compact[0])
+        np.testing.assert_array_equal(full[1], compact[1])
+        self.assertEqual(compact[1].shape, (5, 4))
+
     def _adjacencies(self):
         first = np.asarray([
             [0, 1.0, 0.5, 0],

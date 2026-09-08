@@ -244,6 +244,11 @@ def _resolve_run(spec, args, master):
             exact = frame[frame["model"].astype(str) == "tsmnet_{}".format(args.bnorm)]
             if not exact.empty:
                 frame = exact
+        if "output_dir" in frame:
+            normalized = os.path.normcase(os.path.abspath(run_dir))
+            frame = frame[frame["output_dir"].astype(str).map(
+                lambda value: os.path.normcase(os.path.abspath(value)) == normalized
+            )]
         if not frame.empty:
             record = frame.iloc[-1].dropna().to_dict()
     if not record and not args.allow_missing_master_config:
@@ -424,7 +429,7 @@ def _balanced_target_ids(dataset, target_ids, per_class, seed):
     return np.asarray(selected, dtype=np.int64)
 
 
-def _extract_maps(model, dataset, ids, domains, normalizer, args):
+def _extract_maps(model, dataset, ids, domains, normalizer, args, collect_temporal=True):
     temporal_parts, response_parts = [], []
     feature_metadata = None
     with torch.no_grad():
@@ -440,11 +445,13 @@ def _extract_maps(model, dataset, ids, domains, normalizer, args):
                 feature_metadata = current
             elif feature_metadata != current:
                 raise RuntimeError("Graph feature location changed between batches")
-            temporal_parts.append(temporal.detach().cpu().numpy().astype(np.float32))
+            if collect_temporal:
+                temporal_parts.append(temporal.detach().cpu().numpy().astype(np.float32))
             response_parts.append(torch.sqrt(
                 torch.mean(response.square(), dim=(2, 3)) + 1e-12
             ).detach().cpu().numpy().astype(np.float32))
-    return np.concatenate(temporal_parts), np.concatenate(response_parts), feature_metadata
+    temporal_maps = np.concatenate(temporal_parts) if collect_temporal else None
+    return temporal_maps, np.concatenate(response_parts), feature_metadata
 
 
 def _fold_analysis(context, run_info, subject, representative, config, split_config, args):
@@ -459,6 +466,7 @@ def _fold_analysis(context, run_info, subject, representative, config, split_con
     signature_path = os.path.join(cache_dir, "signature.json")
     signature = {
         "analysis_cache_schema": 2,
+        "seed": int(args.seed),
         "checkpoint": checkpoint, "checkpoint_size": int(os.path.getsize(checkpoint)),
         "checkpoint_mtime_ns": int(os.stat(checkpoint).st_mtime_ns),
         "dataset_cache": context["cache"], "subject": int(subject),
@@ -533,7 +541,7 @@ def _fold_analysis(context, run_info, subject, representative, config, split_con
         if representative else dynamic_ids
     )
     _, target_response, _ = _extract_maps(
-        model, dataset, response_ids, domains, normalizer, args
+        model, dataset, response_ids, domains, normalizer, args, collect_temporal=False
     )
     result = {
         "adjacency": adjacency.astype(np.float32),
@@ -547,7 +555,7 @@ def _fold_analysis(context, run_info, subject, representative, config, split_con
     if representative:
         source_ids = np.asarray(filtered["train"], dtype=np.int64)
         _, source_response, _ = _extract_maps(
-            model, dataset, source_ids, domains, normalizer, args
+            model, dataset, source_ids, domains, normalizer, args, collect_temporal=False
         )
         result["source_response_mean"] = source_response.mean(axis=0).astype(np.float32)
         result["source_response_std"] = (
