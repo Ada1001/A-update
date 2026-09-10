@@ -148,6 +148,14 @@ def parse_args():
             "the generic interface for MSTGC and TSMNet checkpoints."
         ),
     )
+    parser.add_argument(
+        "--fourth-model", choices=["ms_tgc_spddsbn", "tsmnet"], default=None,
+        help="Replace the default fourth panel; tsmnet uses SPDDSBN.",
+    )
+    parser.add_argument(
+        "--fourth-run-dir", default=None,
+        help="Fourth run directory, absolute or relative to --output-root.",
+    )
     parser.add_argument("--data-root", default="data")
     parser.add_argument("--output-root", default="outputs")
     parser.add_argument("--cache-root", default=os.path.join("outputs", "cache"))
@@ -273,7 +281,9 @@ def _parse_datasets(values, labels):
     return parsed
 
 
-def _load_methods(path):
+def _load_methods(path, fourth_model=None, fourth_run_dir=None):
+    if path is not None and (fourth_model is not None or fourth_run_dir is not None):
+        raise ValueError("Use either --method-manifest or --fourth-model/--fourth-run-dir")
     if path is None:
         methods = [dict(item) for item in DEFAULT_METHODS]
     else:
@@ -281,6 +291,13 @@ def _load_methods(path):
             raise FileNotFoundError("Method manifest not found: {}".format(path))
         with open(path, encoding="utf-8") as handle:
             methods = json.load(handle)
+    if path is None and fourth_model == "tsmnet":
+        methods[-1] = {
+            "label": "TSMNet-SPDDSBN", "short_label": "TSMNet\nSPDDSBN",
+            "model_type": "tsmnet", "bnorm": "spddsbn",
+        }
+    if path is None and fourth_run_dir is not None:
+        methods[-1]["run_dir"] = fourth_run_dir
     if not isinstance(methods, list) or len(methods) != 4:
         raise ValueError("The method manifest must contain exactly four methods")
     required = {"label", "model_type"}
@@ -441,7 +458,11 @@ def _validate_comparable_runs(run_infos, methods, args):
         "mstgc_dropout", "mstgc_num_nodes", "mstgc_graph_k",
         "mstgc_time_points", "mstgc_graph_density",
     ]
-    reference_frontend = _model_config(run_infos[-1]["record"])
+    # TSMNet has a different front end; compare MSTGC settings only among
+    # MSTGC runs, even when the fourth/reference panel is TSMNet.
+    mstgc_infos = [info for info, method in zip(run_infos, methods)
+                   if method["model_type"] in EXPECTED_MSTGC_PROVENANCE]
+    reference_frontend = _model_config(mstgc_infos[-1]["record"]) if mstgc_infos else {}
     errors = []
     for info, method in zip(run_infos, methods):
         current = _split_config(info)
@@ -1076,7 +1097,7 @@ def main():
     if args.pca_dim < 2 or args.umap_neighbors < 2:
         raise ValueError("PCA dimension and UMAP neighbors must be at least 2")
     datasets = _parse_datasets(args.datasets, args.dataset_labels)
-    methods = _load_methods(args.method_manifest)
+    methods = _load_methods(args.method_manifest, args.fourth_model, args.fourth_run_dir)
     overrides = _target_subject_overrides(args.target_subjects)
     if not os.path.exists(args.master_summary):
         if not args.allow_missing_master_config:
@@ -1135,6 +1156,7 @@ def main():
             "display_name": dataset_spec["display_name"],
             "cache": context["cache"], "split_config": split_config,
             "representative_fold": selection,
+            "representative_reference_method": methods[-1]["label"],
             "common_loso_subjects": common_subjects,
             "metric_subjects": metric_subjects,
             "runs": [

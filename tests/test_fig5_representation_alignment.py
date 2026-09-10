@@ -20,6 +20,31 @@ from analysis.fig5_representation_alignment import (
 
 
 class Fig5RepresentationAlignmentTests(unittest.TestCase):
+    def test_fourth_panel_tsmnet_preset_preserves_first_three_methods(self):
+        baseline = _load_methods(None)
+        methods = _load_methods(None, fourth_model="tsmnet", fourth_run_dir="custom_tsmnet")
+        self.assertEqual(methods[:3], baseline[:3])
+        self.assertEqual(methods[3]["model_type"], "tsmnet")
+        self.assertEqual(methods[3]["bnorm"], "spddsbn")
+        self.assertEqual(methods[3]["run_dir"], "custom_tsmnet")
+        self.assertEqual(methods[3]["label"], "TSMNet-SPDDSBN")
+
+    def test_mixed_models_compare_only_mstgc_frontends(self):
+        _, infos = self._comparable_run_infos()
+        methods = _load_methods(None, fourth_model="tsmnet")
+        for info in infos[:3]:
+            info["record"]["mstgc_temporal_hidden"] = 32
+        # Unrelated/default MSTGC metadata on TSMNet must not be a reference.
+        infos[3]["record"]["mstgc_temporal_hidden"] = 64
+        _validate_comparable_runs(infos, methods, SimpleNamespace(allow_legacy_refit=False))
+        infos[0]["record"]["mstgc_temporal_hidden"] = 16
+        with self.assertRaisesRegex(ValueError, "different shared-front-end"):
+            _validate_comparable_runs(infos, methods, SimpleNamespace(allow_legacy_refit=False))
+
+    def test_manifest_and_fourth_preset_conflict_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "either"):
+            _load_methods("unused.json", fourth_model="tsmnet")
+
     def _metadata(self, samples_per_group=8):
         rows = []
         sample_id = 0

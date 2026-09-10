@@ -8,8 +8,9 @@ import torch
 
 from src.cl_tsmnet.ms_tgc_spddsbn import DomainBatchNorm1d
 from src.cl_tsmnet.training import (
-    _mstgc_architecture_name, build_ms_tgc_spddsbn, train_one_split,
+    _mstgc_architecture_name, build_ms_tgc_spddsbn, build_tsmnet, train_one_split,
 )
+from src.cl_tsmnet.spd_visualization_adapters import extract_alignment_representation
 
 ROOT = str(Path(__file__).resolve().parents[1])
 CASES = [
@@ -18,6 +19,20 @@ CASES = [
     ("mstgc_dta_cheb_spdbn", "augmented", "spdbn", False, 210),
     ("ms_tgc_spddsbn", "augmented", "spddsbn", True, 210),
 ]
+
+
+def test_tsmnet_adapter_exports_actual_classifier_features():
+    model = build_tsmnet(ROOT, 4, 32, 2, np.array([0, 1]),
+                         spatial_filters=6, subspacedims=3,
+                         temp_kernel=5, device=torch.device("cpu")).eval()
+    windows, domains = torch.randn(4, 4, 32), torch.tensor([0, 0, 1, 1])
+    with torch.no_grad():
+        logits = model(windows, domains, return_latent=False)
+        features, metadata = extract_alignment_representation(model, windows, domains, "tsmnet")
+        torch.testing.assert_close(logits, model.classifier(features.to(dtype=torch.double)),
+                                   atol=1e-6, rtol=1e-6)
+    assert features.shape == (4, 6)
+    assert metadata["normalization"] == "spddsbn"
 
 
 def test_eudsbn_refit_replaces_moments_and_preserves_other_state():

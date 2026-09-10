@@ -148,6 +148,34 @@ the recommended quantitative panel for the paper.
 
 ## TSMNet support
 
+To retain the first three default MSTGC methods and replace only column four
+with TSMNet-SPDDSBN, use `--fourth-model tsmnet`. Default run discovery tries
+`<output-root>/<dataset>_loso_tsmnet_spddsbn` and then
+`<output-root>/<dataset>_loso_spddsbn`. `--fourth-run-dir` overrides that path
+(absolute, or relative to output-root; `{dataset}` is supported). The master
+summary must contain an exactly matched record for each of the four runs.
+Do not combine this preset with `--method-manifest`.
+
+```bash
+python analysis/fig5_representation_alignment.py \
+  --datasets stew --dataset-labels STEW \
+  --fourth-model tsmnet \
+  --output-root outputs/fig5_stew_v3 \
+  --master-summary outputs/fig5_stew_v3/master_summary.csv \
+  --target-subjects stew=21 \
+  --metric-scope all --max-points-per-group 200 \
+  --reducer umap --batch-size 16 --device cpu \
+  --output-dir results/fig5_stew_tsmnet_s21
+```
+
+The explicit subject retains subject 21 from the uploaded STEW figure.
+Without this override, the representative is selected from column four's
+LOSO median (TSMNet in this preset). The metadata records the reference method.
+Only MSTGC runs are checked for an identical MSTGC front end; all four must
+still share the split/preprocessing configuration. This mixed architecture
+figure is a baseline comparison, not a four-step ablation of one architecture.
+TSMNet exports its covariance-SPD tangent representation, not augmented SPD.
+
 The shared feature adapter supports both `tsmnet` and MSTGC checkpoints. The
 default Fig. 5 remains the specified four MSTGC methods because TSMNet does not
 implement Mean-CE or Mean-EuDSBN. For a separate four-run TSMNet comparison,
