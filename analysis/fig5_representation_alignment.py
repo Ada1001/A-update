@@ -156,6 +156,10 @@ def parse_args():
         "--fourth-run-dir", default=None,
         help="Fourth run directory, absolute or relative to --output-root.",
     )
+    parser.add_argument("--source-calibration", choices=["saved", "refit"], default="saved",
+                        help="Explicit source-train domain BN calibration; checkpoints are never rewritten.")
+    parser.add_argument("--feature-location", choices=["representation", "classifier_input"],
+                        default="representation", help="Original representation or actual final linear classifier input.")
     parser.add_argument("--data-root", default="data")
     parser.add_argument("--output-root", default="outputs")
     parser.add_argument("--cache-root", default=os.path.join("outputs", "cache"))
@@ -643,6 +647,53 @@ def _extract_vectors(model, method, dataset, ids, domains, normalizer, batch_siz
     return np.concatenate(parts, axis=0), extraction_metadata
 
 
+def _publication_features(model, dataset, domains, ids, split, method, args):
+    # Reuse the tested offline intervention; no training or weight updates.
+    from analysis.diagnose_fig5_alignment import extract, refit_source, audit_state
+    calibration = getattr(args, "source_calibration", "saved")
+    feature_location = getattr(args, "feature_location", "representation")
+    before = extract(model, dataset, domains, ids, split["normalizer"],
+                     method["model_type"], args.batch_size, args.device_object)
+    after = before
+    audit = {"policy": calibration, "status": "saved_statistics"}
+    if calibration == "refit":
+        source = split["source_ids"]
+        target = split["target_ids"]
+        if np.intersect1d(domains[source], domains[target]).size:
+            raise ValueError("Source calibration requires disjoint source/target domains")
+        snapshot = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        status = refit_source(model, dataset, domains, source, split["normalizer"],
+                              method["model_type"], args.batch_size, args.device_object)
+        changed = audit_state(snapshot, model, np.unique(domains[source]))
+        after = extract(model, dataset, domains, ids, split["normalizer"],
+                        method["model_type"], args.batch_size, args.device_object)
+        target_mask = np.isin(ids, target)
+        target_delta = float(np.max(np.abs(before["logits"][target_mask] - after["logits"][target_mask])))
+        prediction_equal = bool(np.array_equal(before["logits"][target_mask].argmax(1),
+                                               after["logits"][target_mask].argmax(1)))
+        logits_equal = bool(np.allclose(before["logits"][target_mask], after["logits"][target_mask],
+                                       rtol=1e-6, atol=1e-6))
+        if not prediction_equal or not logits_equal:
+            raise AssertionError("Source calibration changed target predictions/logits")
+        audit.update({"status": status, "changed_source_buffer_keys": changed,
+                      "weights_and_non_source_buffers_unchanged": True,
+                      "target_prediction_identical": prediction_equal,
+                      "target_logits_allclose": logits_equal, "target_logit_max_abs_delta": target_delta})
+    from sklearn.metrics import balanced_accuracy_score
+    labels = dataset["y"][ids]
+    for partition, partition_ids in [("source", split["source_ids"]), ("target", split["target_ids"])]:
+        mask = np.isin(ids, partition_ids)
+        for condition, arrays in [("saved", before), ("analyzed", after)]:
+            audit[partition + "_" + condition + "_bacc"] = float(balanced_accuracy_score(
+                labels[mask], arrays["logits"][mask].argmax(1)))
+    values = after[feature_location].astype(np.float32)
+    return values, {"location": feature_location, "dimension": int(values.shape[1]),
+                    "model_type": method["model_type"], "calibration_audit": audit,
+                    "description": ("TSMNet tangent input to final classifier" if method["model_type"] == "tsmnet"
+                        else "input to readout before LayerNorm" if feature_location == "representation"
+                        else "after readout LayerNorm/Linear/GELU and eval dropout, before final classifier")}
+
+
 def load_feature_set(dataset_context, method, run_info, subject, split_context, args):
     """Load or extract one method's real pre-classifier LOSO representation."""
     dataset = dataset_context["dataset_object"]
@@ -650,7 +701,9 @@ def load_feature_set(dataset_context, method, run_info, subject, split_context, 
     checkpoint = _checkpoint_path(run_info["run_dir"], subject)
     config = _model_config(run_info["record"])
     cache_dir = os.path.join(
-        args.feature_cache_dir, dataset_context["spec"]["name"],
+        args.feature_cache_dir,
+        getattr(args, "source_calibration", "saved") + "_" + getattr(args, "feature_location", "representation"),
+        dataset_context["spec"]["name"],
         method["model_type"] + ("_" + str(method.get("bnorm")) if method["model_type"] == "tsmnet" else ""),
         "subject_{:02d}".format(int(subject)),
     )
@@ -658,6 +711,9 @@ def load_feature_set(dataset_context, method, run_info, subject, split_context, 
     metadata_path = os.path.join(cache_dir, "metadata.csv")
     signature_path = os.path.join(cache_dir, "signature.json")
     signature = {
+        "analysis_schema": 2,
+        "source_calibration": getattr(args, "source_calibration", "saved"),
+        "feature_location": getattr(args, "feature_location", "representation"),
         "checkpoint": checkpoint,
         "checkpoint_size": int(os.path.getsize(checkpoint)),
         "checkpoint_mtime_ns": int(os.stat(checkpoint).st_mtime_ns),
@@ -703,10 +759,12 @@ def load_feature_set(dataset_context, method, run_info, subject, split_context, 
     ids = np.concatenate([
         split_context["source_ids"], split_context["target_ids"]
     ]).astype(np.int64)
-    features, location = _extract_vectors(
-        model, method, dataset, ids, domains, split_context["normalizer"],
-        args.batch_size, args.device_object,
-    )
+    from analysis.diagnose_fig5_alignment import digest
+    checkpoint_sha = digest(checkpoint)
+    features, location = _publication_features(model, dataset, domains, ids, split_context, method, args)
+    if checkpoint_sha != digest(checkpoint):
+        raise AssertionError("Checkpoint changed during extraction")
+    location["checkpoint_sha256"] = checkpoint_sha
     metadata = _feature_metadata(
         dataset, ids, domains, split_context["source_ids"]
     )
@@ -1092,6 +1150,13 @@ def _select_subject(dataset, full_run, overrides):
 
 def main():
     args = parse_args()
+    existing_metadata = os.path.join(args.output_dir, "fig5_representation_alignment_metadata.json")
+    if os.path.exists(existing_metadata):
+        with open(existing_metadata, encoding="utf-8") as stream:
+            existing = json.load(stream)
+        if (existing.get("source_calibration", "saved") != args.source_calibration
+                or existing.get("feature_location", "representation") != args.feature_location):
+            raise ValueError("Output directory contains a different analysis protocol; choose a new --output-dir")
     if args.batch_size < 1 or args.max_points_per_group < 1:
         raise ValueError("Batch size and max points must be positive")
     if args.pca_dim < 2 or args.umap_neighbors < 2:
@@ -1131,6 +1196,7 @@ def main():
 
     embedding_records = []
     metric_records = []
+    calibration_records = []
     manifest_records = []
     provenance = {"datasets": {}, "methods": methods}
     panel_data = {}
@@ -1194,6 +1260,18 @@ def main():
                 values = standardized[positions]
                 balanced_metadata = metadata.iloc[positions].reset_index(drop=True)
                 metrics = high_dimensional_metrics(values, balanced_metadata)
+                from analysis.diagnose_fig5_alignment import class_metrics
+                for partition in ["source", "target"]:
+                    mask = balanced_metadata["domain"].to_numpy() == partition
+                    local_metrics = class_metrics(values[mask], balanced_metadata["class_id"].to_numpy()[mask])
+                    metrics.update({partition + "_" + key: value for key, value in local_metrics.items()})
+                calibration_records.append({
+                    "dataset": dataset_spec["name"], "method": method["label"],
+                    "target_subject": int(subject), "feature_location": location["location"],
+                    "feature_dimension": location["dimension"],
+                    "checkpoint_sha256": location["checkpoint_sha256"],
+                    **location["calibration_audit"],
+                })
                 metric_records.append({
                     "dataset": dataset_spec["display_name"],
                     "dataset_id": dataset_spec["name"],
@@ -1238,6 +1316,9 @@ def main():
             embedding_records.append(frame)
 
     metric_frame = pd.DataFrame(metric_records)
+    pd.DataFrame(calibration_records).to_csv(
+        os.path.join(args.output_dir, "fig5_calibration_audit.csv"), index=False
+    )
     discrepancy = _metric_aggregate(metric_records, "domain_discrepancy")
     ratio = _metric_aggregate(metric_records, "separation_ratio")
     aggregate = pd.concat([discrepancy, ratio], ignore_index=True)
@@ -1323,13 +1404,18 @@ def main():
     )
     fig.text(
         0.47, 0.035,
-        "Embeddings are descriptive; quantitative panels use source-standardized high-dimensional features.",
+        "Source BN: {} | Features: {} | Metrics: source-standardized high-dimensional features.".format(
+            args.source_calibration, args.feature_location),
         ha="center", va="center", fontsize=5.7, color="#555555",
     )
     paths = _save_figure(fig, args.output_dir)
     plt.close(fig)
 
     provenance.update({
+        "source_calibration": args.source_calibration,
+        "feature_location": args.feature_location,
+        "calibration_audits": calibration_records,
+        "source_scaler_policy": "fit on analyzed source-train features after requested calibration, separately per method/fold",
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "command": " ".join(sys.argv), "random_seed": int(args.seed),
         "metric_scope": args.metric_scope,

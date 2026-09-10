@@ -93,6 +93,62 @@ feature standardizer on source windows only.
 
 ## Publication command
 
+### Explicit source-calibrated analysis
+
+After fixed-weight diagnostics support source BN statistics mismatch, request
+`--source-calibration refit`. This calibrates each source-training domain of
+EuDSBN/SPDDSBN using that domain's unlabeled source-training windows and a
+fixed checkpoint. Mean-CE and global SPDBN retain their existing statistics;
+no artificial domain BN is introduced. No checkpoint is rewritten. Every
+fold checks that weights/non-source buffers and target predictions remain
+unchanged (logits tolerance 1e-6). This is an explicit post-training analysis
+protocol, not evidence of improved target accuracy.
+
+`--feature-location representation` retains the original representation;
+`--feature-location classifier_input` extracts the actual final linear
+classifier input (MSTGC default 128D, after LayerNorm/projection/GELU; TSMNet
+retains its tangent vector because it has no corresponding projection).
+All four methods use the requested extraction rule. Never relabel this mode
+as the original 64D/210D representation comparison.
+
+Each method/fold fits its feature scaler on the analyzed source features AFTER
+the requested calibration. This differs from the fixed-baseline scaler used
+in `diagnose_fig5_alignment.py`: the publication comparison standardizes each
+method consistently, while the diagnostic isolates a change within one model.
+Do not paste diagnostic metric values into publication panels.
+
+Calibrated classifier-feature comparison:
+
+```bash
+python -u analysis/fig5_representation_alignment.py \
+  --datasets stew --dataset-labels STEW \
+  --output-root outputs/fig5_stew_v3 \
+  --master-summary outputs/fig5_stew_v3/master_summary.csv \
+  --source-calibration refit --feature-location classifier_input \
+  --target-subjects stew=21 --metric-scope all \
+  --max-points-per-group 200 --seed 2026 \
+  --reducer umap --pca-dim 210 --batch-size 16 --device cpu \
+  --output-dir results/fig5_stew_calibrated_classifier
+```
+
+For the companion original-representation figure, change only
+`--feature-location representation` and use a different output directory,
+e.g. `results/fig5_stew_calibrated_representation`.
+The high PCA cap skips PCA pre-reduction at default dimensions when the
+source sample count is sufficient. Retain the same reducer and subject;
+use joint t-SNE only as a separately labeled sensitivity figure, not to select
+the prettiest result. Keep `--metric-scope all` for final quantitative panels.
+
+`fig5_calibration_audit.csv` and JSON metadata record every fold's feature
+location/dimension, source and target BAcc before/after intervention, changed
+buffer keys, target invariants, and checkpoint SHA256. Per-fold metric CSV also
+includes source-only and target-only class distance/variance/Fisher metrics.
+The footer discloses the calibration/feature protocol. Feature caches are
+separated by calibration and feature location; old feature caches are not reused.
+Changing protocol in an existing figure directory is rejected to preserve old
+results. Both `fig5_representation_alignment.py` and
+`diagnose_fig5_alignment.py` must be present on the server.
+
 Install the preferred optional reducer once:
 
 ```bash

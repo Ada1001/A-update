@@ -1,4 +1,7 @@
 /data
+/results
 /outputs
+/.cache
+/.agents
 __pycache__/
 *.py[cod]
