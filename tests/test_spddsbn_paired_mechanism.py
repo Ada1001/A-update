@@ -59,7 +59,15 @@ def test_analyze_common_space_render_cache_and_tamper(tmp_path):
     coords=np.load(folder/"common_coordinates.npz")
     np.testing.assert_allclose(coords["pre"],coords["post"])
     frame=pd.DataFrame([row])
-    m.plot_and_report(frame,m.statistics(frame,42),args)
+    stats=m.statistics(frame,42)
+    assert stats.p_wilcoxon.isna().all()
+    assert stats.median_ci_low.isna().all()
+    assert stats.rank_biserial.isna().all()
+    m.plot_and_report(frame,stats,args)
+    report=(tmp_path/"SPDDSBN_PAIRED_ANALYSIS_SUMMARY.md").read_text(encoding="utf-8")
+    assert "SINGLE-FOLD DIAGNOSTIC" in report
+    assert "percentile 50" not in report
+    assert (tmp_path/"Fig_SPDDSBN_POST_detail.pdf").exists()
     assert (tmp_path/"Fig_SPDDSBN_Paired_Mechanism.pdf").stat().st_size > 1000
     with open(folder/"samples.csv","a") as f:
         f.write("tamper")

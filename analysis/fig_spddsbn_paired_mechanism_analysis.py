@@ -215,7 +215,7 @@ def statistics(frame, seed):
         if not key.startswith(("domain_discrepancy", "fisher", "knn", "rho")):
             continue
         x = frame[key].to_numpy()
-        rows.append(dict(metric=key, n=len(x), mean=x.mean(), std=x.std(ddof=1),
+        rows.append(dict(metric=key, n=len(x), mean=x.mean(), std=x.std(ddof=1) if len(x)>1 else np.nan,
                          median=np.median(x), q25=np.quantile(x, .25), q75=np.quantile(x, .75),
                          iqr=np.quantile(x, .75)-np.quantile(x, .25)))
     for prefix in ("domain_discrepancy", "fisher_source", "fisher_target", "fisher_pooled"):
@@ -223,12 +223,15 @@ def statistics(frame, seed):
         nonzero = delta[delta != 0]
         ranks = rankdata(np.abs(nonzero))
         effect = float(np.sum(ranks * np.sign(nonzero)) / ranks.sum()) if len(nonzero) else 0.
-        boot = np.random.default_rng(seed).choice(delta, (10000, len(delta)), replace=True)
-        lo, hi = np.quantile(np.median(boot, axis=1), [.025, .975])
+        if len(delta)>1:
+            boot = np.random.default_rng(seed).choice(delta, (10000, len(delta)), replace=True)
+            lo, hi = np.quantile(np.median(boot, axis=1), [.025, .975])
+        else:
+            lo = hi = effect = np.nan
         rows.append(dict(metric=prefix + "_delta_post_minus_pre", n=len(delta), mean=delta.mean(),
-                         std=delta.std(ddof=1), median=np.median(delta), q25=np.quantile(delta, .25),
+                         std=delta.std(ddof=1) if len(delta)>1 else np.nan, median=np.median(delta), q25=np.quantile(delta, .25),
                          q75=np.quantile(delta, .75), iqr=np.quantile(delta,.75)-np.quantile(delta,.25),
-                         p_wilcoxon=float(wilcoxon(delta).pvalue) if len(nonzero) else 1.,
+                         p_wilcoxon=(float(wilcoxon(delta).pvalue) if len(nonzero) else 1.) if len(delta)>1 else np.nan,
                          rank_biserial=effect, median_ci_low=lo, median_ci_high=hi))
     return pd.DataFrame(rows)
 
@@ -285,6 +288,9 @@ def plot_and_report(frame, stats, args):
         for row in x:
             ax.plot([0, 1], row, "o-", ms=2, lw=.4, color=".65", alpha=.6)
         for i in range(2):
+            if len(x)==1:
+                ax.plot(i,x[0,i],"o",color="black",ms=4)
+                continue
             boot = np.random.default_rng(args.seed).choice(x[:, i], (10000, len(x)), replace=True)
             lower, upper = np.quantile(np.median(boot, axis=1), [.025, .975])
             mid = np.median(x[:, i])
@@ -294,7 +300,8 @@ def plot_and_report(frame, stats, args):
     ax = axes[1, 1]
     for i, key in enumerate(("knn_source", "knn_target", "rho_source", "rho_target")):
         values = frame[key].to_numpy()
-        ax.boxplot(values, positions=[i], widths=.45, showfliers=False, medianprops=dict(color="black"))
+        if len(values)>1:
+            ax.boxplot(values, positions=[i], widths=.45, showfliers=False, medianprops=dict(color="black"))
         ax.scatter(i + rng.uniform(-.12,.12,len(values)), values, s=7, color=".4", marker="o" if key.endswith("source") else "^")
     ax.set(xticks=range(4), xticklabels=["kNN\nS", "kNN\nT", "ρ\nS", "ρ\nT"], ylim=(-1.05,1.05), title="(e) Within-domain structure")
     paired(axes[1, 2], "fisher_target", "(f) Target Fisher ratio ↑")
@@ -303,31 +310,54 @@ def plot_and_report(frame, stats, args):
     fig.legend(handles=handles, loc="upper center", ncol=len(handles), frameon=False)
     for ax in axes.flat:
         ax.spines[["top", "right"]].set_visible(False)
-    fig.text(.5,.018,"Subject {}: common PRE-source PCA; (c) open → filled. All {} folds: median and bootstrap 95% CI.".format(subject,len(frame)),ha="center",fontsize=6)
+    caption = ("{} folds: median and bootstrap 95% CI.".format(len(frame)) if len(frame)>1
+               else "Single-fold diagnostic; no confidence intervals or inference.")
+    fig.text(.5,.018,"Subject {}: common PRE-source PCA; (c) open → filled. ".format(subject)+caption,ha="center",fontsize=6)
     fig.tight_layout(rect=(0,.05,1,.93), w_pad=1.2,h_pad=1.6)
     for ext in ("pdf", "png"):
         fig.savefig(out / ("Fig_SPDDSBN_Paired_Mechanism." + ext), dpi=600)
     plt.close(fig)
+    # Separate supplementary magnification; no refitted PCA or changed metrics.
+    zoom, ax = plt.subplots(figsize=(3.58,3.2))
+    for ci,c in enumerate(classes):
+        for domain,marker in (("source","o"),("target","^")):
+            ix = shown[(meta.true_label.to_numpy()[shown]==c)&(meta.domain.to_numpy()[shown]==domain)]
+            ax.scatter(*xy["post"][ix].T,s=12,c=colors[ci],marker=marker,alpha=.5)
+    ax.set(xlabel="Common PC1",ylabel="Common PC2",title="POST detail: magnified axes, unchanged PCA")
+    zoom.legend(handles=handles,loc="upper center",ncol=2,frameon=False,fontsize=6)
+    zoom.tight_layout(rect=(0,0,1,.84))
+    for ext in ("pdf","png"):
+        zoom.savefig(out/("Fig_SPDDSBN_POST_detail."+ext),dpi=600)
+    plt.close(zoom)
     lines = ["# SPDDSBN paired mechanism analysis", "", "Real checkpoint exports; all export/SPD/pairing audits passed.",
              "PRE is the BiMap + ReEig output; POST is immediately after SPDDSBN. This isolates the layer inside a trained model, not an untrained/raw-data baseline.",
              "All exported source-training and target-test windows enter metrics. Source kNN pools source subjects. Target labels are used only for post-hoc class metrics and colors.",
              "AIRM reference, standardization and PCA are fitted only to PRE source windows. Fisher uses all standardized tangent dimensions; panel (f) uses target Fisher.",
              "P values are exploratory, two-sided, unadjusted Wilcoxon tests. LOSO folds share training subjects; bootstrap intervals and tests do not establish independent replication.", ""]
     selected = frame.loc[frame.subject_id == subject].iloc[0]
+    if len(frame)==1:
+        lines.append("SINGLE-FOLD DIAGNOSTIC: p values, confidence intervals, effect sizes and representative-fold percentiles are unavailable. No population-level conclusion is supported.")
     for key in ("domain_discrepancy", "fisher_target"):
         delta = frame[key+"_post"] - frame[key+"_pre"]
         st = stats.loc[stats.metric == key+"_delta_post_minus_pre"].iloc[0]
+        if len(frame)==1:
+            lines.append("{}: PRE {:.6g}, POST {:.6g}; observed change {:.6g}. Descriptive only.".format(key,selected[key+"_pre"],selected[key+"_post"],delta.iloc[0]))
+            continue
         lines.append("{}: mean PRE {:.6g}, POST {:.6g}; decreases in {}/{} folds; median paired change {:.6g}, 95% bootstrap CI [{:.6g}, {:.6g}], p={:.6g}, rank-biserial={:.4g}.".format(key,frame[key+"_pre"].mean(),frame[key+"_post"].mean(),int((delta<0).sum()),len(frame),st["median"],st.median_ci_low,st.median_ci_high,st.p_wilcoxon,st.rank_biserial))
     for key in ("domain_discrepancy_post", "fisher_target_post", "knn_source", "knn_target", "rho_source", "rho_target"):
         x = frame[key]
+        if len(frame)==1:
+            lines.append("{}: {:.6g}; representative percentile unavailable.".format(key,x.iloc[0]))
+            continue
         percentile = 100 * ((x < selected[key]).sum() + .5*(x == selected[key]).sum()) / len(x)
         near_median = int(frame.loc[(x-x.median()).abs().idxmin(),"subject_id"])
         near_mean = int(frame.loc[(x-x.mean()).abs().idxmin(),"subject_id"])
         lines.append("{}: mean {:.5g}, median {:.5g}; subject {} percentile {:.1f}%; nearest median fold {}, nearest mean fold {}.{}".format(key,x.mean(),x.median(),subject,percentile,near_median,near_mean," WARNING: representative fold is extreme on this metric." if percentile<10 or percentile>90 else ""))
     dstat = stats.loc[stats.metric == "domain_discrepancy_delta_post_minus_pre"].iloc[0]
     jstat = stats.loc[stats.metric == "fisher_target_delta_post_minus_pre"].iloc[0]
-    lines.append("Domain discrepancy: " + ("the median paired change is negative, with its descriptive interval below zero." if dstat.median_ci_high < 0 else "the interval does not support a clear median reduction."))
-    lines.append("Target discrimination: " + ("increased (median-change interval above zero)." if jstat.median_ci_low > 0 else "decreased (median-change interval below zero)." if jstat.median_ci_high < 0 else "direction uncertain; maintenance is not established."))
+    if len(frame)>1:
+        lines.append("Domain discrepancy: " + ("the median paired change is negative, with its descriptive interval below zero." if dstat.median_ci_high < 0 else "the interval does not support a clear median reduction."))
+        lines.append("Target discrimination: " + ("increased (median-change interval above zero)." if jstat.median_ci_low > 0 else "decreased (median-change interval below zero)." if jstat.median_ci_high < 0 else "direction uncertain; maintenance is not established."))
     lines.append("Relational structure: report the measured kNN overlap as the retained fraction of 15 neighbors, and rho as distance-order consistency, separately for pooled source and target. No validated cutoff is available here for a binary well-preserved claim.")
     lines += ["", "Interpretation: assess domain discrepancy, kNN overlap, distance rank correlation and Fisher jointly. There is no predeclared equivalence margin for structure or discrimination, so these results alone do not establish preservation/equivalence. A nonsignificant Fisher change is not evidence of maintenance.",
               "This figure is suitable for reporting the observed paired mechanism diagnostics; whether it supports the intended scientific claim depends on the actual directions, magnitudes and uncertainty above. Do not select another subject or reducer to obtain a preferred conclusion."]

@@ -105,3 +105,15 @@ zip -r results/fig4_spddsbn_review.zip \
 ```
 
 本地测试仅在 pytest 临时目录用明确标注的数值测试数据验证 AIRM、邻居、Fisher、缓存防篡改、真实模型导出接口和图形布局；没有生成冒充真实实验的论文结果。
+
+## 2026-09-15 单折报告修正
+
+单折诊断不再报告 Wilcoxon p、置信区间、秩二列效应量或代表折百分位，这些字段留空；单折没有可解释的跨折不确定性。主图明确标注 single-fold diagnostic。新增 `Fig_SPDDSBN_POST_detail.pdf/png`，只改变补充图坐标显示范围，不重新拟合 PCA，不改变主图公共坐标及指标。
+
+已有完整导出与分析缓存时，同步脚本后直接重跑以下命令，复用高维指标即可更新报告和图：
+
+```bash
+/root/miniconda3/bin/python -u analysis/fig_spddsbn_paired_mechanism_analysis.py \
+  --stage analyze --expected-folds 1 --representative-subject 21 \
+  --output-dir results/fig4_spddsbn_s21
+```
