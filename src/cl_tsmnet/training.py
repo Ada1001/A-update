@@ -512,8 +512,8 @@ def make_optimizer(model, lr=1e-3, weight_decay=1e-4, model_type="tsmnet"):
     try:
         import geoopt
         optim_cls = geoopt.optim.RiemannianAdam
-    except Exception:
-        optim_cls = torch.optim.Adam
+    except ImportError as exc:
+        raise ImportError("SPD models require geoopt.RiemannianAdam; ordinary Adam is not an equivalent fallback") from exc
 
     decay, no_decay = [], []
     for name, param in model.named_parameters():
@@ -1130,7 +1130,7 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
                     transformer_layers=2, transformer_ff=128,
                     transformer_dropout=0.2,
                     shallow_filters=40, shallow_kernel=25,
-                    shallow_pool=25, shallow_dropout=0.5):
+                    shallow_pool=25, shallow_dropout=0.5, tsmnet_bn_schedule="constant"):
     torch.manual_seed(int(seed))
     np.random.seed(int(seed))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1458,7 +1458,22 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         model_type in ["bfgcn", "tahag", "mdtn"] and target_adapt
     ) else None
     domain_loss_fn = torch.nn.NLLLoss()
+    bn_scheduler = None
+    if model_type == "tsmnet" and bnorm == "spddsbn":
+        from types import SimpleNamespace
+        from spdnets.batchnorm import ConstantMomentumBatchNormScheduler, MomentumBatchNormScheduler
+        if tsmnet_bn_schedule == "momentum":
+            if int(epochs) <= 11:
+                raise ValueError("Paper momentum schedule needs epochs > 11 (schedule epochs = training epochs - 10)")
+            bn_scheduler = MomentumBatchNormScheduler(epochs=int(epochs)-10,
+                bs=int(batch_size), bs0=int(batch_size), tau0=.85)
+        else:
+            bn_scheduler = ConstantMomentumBatchNormScheduler(eta=.1, eta_test=.1)
+        bn_scheduler.initialize()
+        bn_scheduler.on_train_begin(SimpleNamespace(module_=model))
     for epoch in range(1, int(epochs) + 1):
+        if bn_scheduler is not None and tsmnet_bn_schedule == "momentum":
+            bn_scheduler.on_epoch_begin(None)
         model.train()
         batch_losses = []
         for step, batch in enumerate(train_loader):

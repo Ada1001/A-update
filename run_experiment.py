@@ -14,6 +14,7 @@ from src.cl_tsmnet.experiment_utils import (
 )
 from src.cl_tsmnet.splits import (
     domain_ids,
+    split_domain_ids,
     iter_eval_subjects,
     make_splits,
     split_validation_issues,
@@ -156,6 +157,8 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--bnorm", choices=["spddsbn", "spdbn", "none"], default="spddsbn")
+    parser.add_argument("--tsmnet-bn-schedule", choices=["constant", "momentum"], default="constant",
+                        help="Author SPDDSBN constant scheduler or SPDDSMBN momentum scheduler")
     parser.add_argument("--model-name", default=None,
                         help="Model name written to result CSV files.")
     parser.add_argument("--temporal-filters", type=int, default=4)
@@ -355,7 +358,7 @@ def main():
             subject_dir = os.path.join(out_root, "subject_{:02d}".format(int(subject)))
             res = train_one_split(
                 dataset=dataset,
-                domains=domains,
+                domains=split_domain_ids(dataset, args.protocol, split),
                 split=split,
                 project_root=project_root,
                 output_dir=subject_dir,
@@ -366,6 +369,7 @@ def main():
                 lr=args.lr,
                 weight_decay=args.weight_decay,
                 bnorm=args.bnorm,
+                tsmnet_bn_schedule=args.tsmnet_bn_schedule,
                 augment=augment,
                 model_type=args.model,
                 temporal_filters=args.temporal_filters,
@@ -451,6 +455,8 @@ def main():
                 "test_session": split.get("test_session", ""),
                 "model_type": args.model,
                 "bnorm": args.bnorm if args.model == "tsmnet" else "",
+                "domain_policy": "time_blocks_v1" if args.protocol == "single_session" else "subject_session",
+                "tsmnet_bn_schedule": args.tsmnet_bn_schedule if args.model == "tsmnet" else "",
                 "epochs_ran": res["epochs_ran"],
                 "best_epoch": res["best_epoch"],
                 "best_val_loss": res["best_val_loss"],
@@ -526,6 +532,8 @@ def main():
             "lr": args.lr,
             "weight_decay": args.weight_decay,
             "seed": args.seed,
+            "domain_policy": "time_blocks_v1" if args.protocol == "single_session" else "subject_session",
+            "tsmnet_bn_schedule": args.tsmnet_bn_schedule if args.model == "tsmnet" else "",
             "target_adapt": any(bool(row["target_adapt"]) for row in results),
             "target_adapt_requested": target_adapt,
             "target_refit_scope": ",".join(sorted(set(

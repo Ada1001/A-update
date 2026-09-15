@@ -88,6 +88,7 @@ def export_fold(context, info, method, subject, args):
         raise FileExistsError("Completed export exists; use --stage analyze or a new output directory")
     dataset, domains = context["dataset_object"], context["domains"]
     split = f5._make_split_context(context, subject, f5._split_config(info))
+    domains = split.get("domains", domains)
     source, target = split["source_ids"], split["target_ids"]
     if np.intersect1d(domains[source], domains[target]).size:
         raise ValueError("Source and target domains overlap")
@@ -119,6 +120,7 @@ def export_fold(context, info, method, subject, args):
     values = {k: np.concatenate(v) for k, v in chunks.items()}
     actual = values["logits"][len(source):]
     audit = {"subject_id": subject, "checkpoint": str(checkpoint), "checkpoint_sha256": sha,
+             "protocol": context.get("protocol", "loso"), "model_type": method["model_type"],
              "checkpoint_unchanged": diag.digest(checkpoint) == sha,
              "target_logits_allclose": bool(np.allclose(baseline, actual, rtol=1e-6, atol=1e-6)),
              "target_predictions_identical": bool(np.array_equal(baseline.argmax(1), actual.argmax(1))),
@@ -369,6 +371,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--stage", choices=["all", "extract", "analyze"], default="all")
     p.add_argument("--datasets", default="stew")
+    p.add_argument("--protocol", choices=["loso", "single_session"], default="loso")
+    p.add_argument("--model", choices=["ms_tgc_spddsbn", "tsmnet"], default="ms_tgc_spddsbn")
     p.add_argument("--dataset-labels", default="STEW")
     p.add_argument("--subjects", default="all")
     p.add_argument("--expected-folds", type=int, default=48)
@@ -401,9 +405,7 @@ def main():
         specs = f5._parse_datasets(args.datasets,args.dataset_labels)
         if len(specs) != 1:
             p.error("Use one dataset per directory")
-        method = f5._load_methods(None)[-1]
-        if method["model_type"] != "ms_tgc_spddsbn":
-            raise ValueError("Expected full model")
+        method = f5._load_methods(None, fourth_model="tsmnet" if args.model == "tsmnet" else None)[-1]
         info = f5._resolve_run(specs[0],method,args,pd.read_csv(args.master_summary))
         f5._validate_comparable_runs([info],[method],args)
         subjects = sorted(set(info["summary"].subject.astype(int))) if args.subjects == "all" else sorted(set(map(int,args.subjects.split(","))))
@@ -416,6 +418,10 @@ def main():
         f5._write_json({"subjects": subjects, "arguments": vars(args)},str(out / "export_manifest.json"))
     if args.stage in ("all", "analyze"):
         manifest = json.loads((out / "export_manifest.json").read_text(encoding="utf-8"))
+        saved_args = manifest.get("arguments", {})
+        for name, default in (("protocol", "loso"), ("model", "ms_tgc_spddsbn")):
+            if saved_args.get(name, default) != getattr(args, name):
+                raise ValueError("Export uses a different --{}; pass the matching value".format(name))
         subjects = manifest["subjects"]
         if len(subjects) != args.expected_folds or args.representative_subject not in subjects:
             raise ValueError("Unexpected fold count or representative subject absent")

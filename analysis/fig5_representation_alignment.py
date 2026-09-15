@@ -47,7 +47,7 @@ from src.cl_tsmnet.spd_visualization_adapters import (
     SUPPORTED_ALIGNMENT_MODELS,
     extract_alignment_representation,
 )
-from src.cl_tsmnet.splits import domain_ids, make_split
+from src.cl_tsmnet.splits import domain_ids, make_split, split_domain_ids
 from src.cl_tsmnet.training import (
     _filter_artifact_windows,
     build_ms_tgc_spddsbn,
@@ -193,6 +193,7 @@ def parse_args():
     parser.add_argument("--allow-missing-master-config", action="store_true")
     parser.add_argument("--allow-legacy-refit", action="store_true")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    parser.add_argument("--protocol", choices=["loso", "single_session"], default="loso")
     return parser.parse_args()
 
 
@@ -337,7 +338,7 @@ def _target_fs(dataset_spec, args):
     return default_target_fs(dataset_spec["dataset"], override)
 
 
-def _candidate_run_dirs(dataset_name, method, output_root):
+def _candidate_run_dirs(dataset_name, method, output_root, protocol="loso"):
     if method.get("run_dir"):
         rendered = str(method["run_dir"]).format(
             dataset=dataset_name, model=method["model_type"],
@@ -348,18 +349,18 @@ def _candidate_run_dirs(dataset_name, method, output_root):
     if model_type == "tsmnet":
         bnorm = method.get("bnorm") or "none"
         return [
-            os.path.join(output_root, "{}_loso_tsmnet_{}".format(dataset_name, bnorm)),
-            os.path.join(output_root, "{}_loso_{}".format(dataset_name, bnorm)),
+            os.path.join(output_root, "{}_{}_tsmnet_{}".format(dataset_name, protocol, bnorm)),
+            os.path.join(output_root, "{}_{}_{}".format(dataset_name, protocol, bnorm)),
         ]
-    return [os.path.join(output_root, "{}_loso_{}".format(dataset_name, model_type))]
+    return [os.path.join(output_root, "{}_{}_{}".format(dataset_name, protocol, model_type))]
 
 
-def _matching_master_row(master, dataset_name, method, run_dir):
+def _matching_master_row(master, dataset_name, method, run_dir, protocol="loso"):
     if master is None or master.empty:
         return {}
     frame = master.copy()
     for column, value in [
-        ("dataset", dataset_name), ("protocol", "loso"),
+        ("dataset", dataset_name), ("protocol", protocol),
         ("model_type", method["model_type"]),
     ]:
         if column in frame:
@@ -381,7 +382,8 @@ def _matching_master_row(master, dataset_name, method, run_dir):
 
 
 def _resolve_run(dataset_spec, method, args, master):
-    candidates = _candidate_run_dirs(dataset_spec["name"], method, args.output_root)
+    protocol = getattr(args, "protocol", "loso")
+    candidates = _candidate_run_dirs(dataset_spec["name"], method, args.output_root, protocol)
     run_dir = next((path for path in candidates if os.path.isdir(path)), None)
     if run_dir is None:
         raise FileNotFoundError(
@@ -396,12 +398,12 @@ def _resolve_run(dataset_spec, method, args, master):
         raise FileNotFoundError("Missing per-subject summary: {}".format(summary_path))
     summary = pd.read_csv(summary_path)
     if "protocol" in summary:
-        summary = summary[summary["protocol"].astype(str) == "loso"]
+        summary = summary[summary["protocol"].astype(str) == protocol]
     if "model_type" in summary:
         summary = summary[summary["model_type"].astype(str) == method["model_type"]]
     if summary.empty:
         raise ValueError("No matching LOSO rows in {}".format(summary_path))
-    record = _matching_master_row(master, dataset_spec["name"], method, run_dir)
+    record = _matching_master_row(master, dataset_spec["name"], method, run_dir, protocol)
     if not record and not args.allow_missing_master_config:
         raise ValueError(
             "No matching training configuration in {} for {} / {}. Exact "
@@ -447,7 +449,7 @@ def _split_config(run_info):
         artifact = _usable(values.iloc[0]) if len(values) else None
     return {
         "seed": _record_value(record, "seed", 42, int),
-        "val_size": _record_value(record, "val_size", 0.2, float),
+        "val_size": _record_value(record, "single_val_size", 0.125, float) if record.get("protocol") == "single_session" else _record_value(record, "val_size", 0.2, float),
         "test_size": _record_value(record, "test_size", 0.2, float),
         "artifact_z": None if artifact is None else float(artifact),
     }
@@ -469,6 +471,10 @@ def _validate_comparable_runs(run_infos, methods, args):
     reference_frontend = _model_config(mstgc_infos[-1]["record"]) if mstgc_infos else {}
     errors = []
     for info, method in zip(run_infos, methods):
+        if getattr(args, "protocol", "loso") == "single_session":
+            policies = set(info["summary"].get("domain_policy", pd.Series(dtype=str)).dropna().astype(str))
+            if policies != {"time_blocks_v1"}:
+                errors.append("{} requires new single_session time_blocks_v1 checkpoints; legacy shared-domain checkpoints cannot be reused".format(method["label"]))
         current = _split_config(info)
         differences = [key for key in keys if current[key] != reference[key]]
         if differences:
@@ -697,11 +703,12 @@ def _publication_features(model, dataset, domains, ids, split, method, args):
 def load_feature_set(dataset_context, method, run_info, subject, split_context, args):
     """Load or extract one method's real pre-classifier LOSO representation."""
     dataset = dataset_context["dataset_object"]
-    domains = dataset_context["domains"]
+    domains = split_context.get("domains", dataset_context["domains"])
     checkpoint = _checkpoint_path(run_info["run_dir"], subject)
     config = _model_config(run_info["record"])
     cache_dir = os.path.join(
         args.feature_cache_dir,
+        dataset_context.get("protocol", "loso"),
         getattr(args, "source_calibration", "saved") + "_" + getattr(args, "feature_location", "representation"),
         dataset_context["spec"]["name"],
         method["model_type"] + ("_" + str(method.get("bnorm")) if method["model_type"] == "tsmnet" else ""),
@@ -712,6 +719,7 @@ def load_feature_set(dataset_context, method, run_info, subject, split_context, 
     signature_path = os.path.join(cache_dir, "signature.json")
     signature = {
         "analysis_schema": 2,
+        "protocol": dataset_context.get("protocol", "loso"),
         "source_calibration": getattr(args, "source_calibration", "saved"),
         "feature_location": getattr(args, "feature_location", "representation"),
         "checkpoint": checkpoint,
@@ -784,7 +792,7 @@ def load_feature_set(dataset_context, method, run_info, subject, split_context, 
 def _make_split_context(dataset_context, subject, split_config):
     dataset = dataset_context["dataset_object"]
     split = make_split(
-        dataset, "loso", int(subject), seed=int(split_config["seed"]),
+        dataset, dataset_context.get("protocol", "loso"), int(subject), seed=int(split_config["seed"]),
         val_size=float(split_config["val_size"]),
         test_size=float(split_config["test_size"]),
     )
@@ -803,6 +811,7 @@ def _make_split_context(dataset_context, subject, split_config):
         raise RuntimeError("Source-train and target-test sample IDs overlap")
     return {
         "source_ids": np.asarray(filtered["train"], dtype=np.int64),
+        "domains": split_domain_ids(dataset, dataset_context.get("protocol", "loso"), split),
         "val_ids": np.asarray(filtered["val"], dtype=np.int64),
         "target_ids": np.asarray(filtered["test"], dtype=np.int64),
         "normalizer": normalizer,
@@ -1107,7 +1116,7 @@ def _save_figure(fig, output_dir):
 def _load_dataset_context(spec, args):
     fs = _target_fs(spec, args)
     cache = default_cache_path(
-        spec["dataset"], "loso", cog_paradigm=spec["paradigm"],
+        spec["dataset"], getattr(args, "protocol", "loso"), cog_paradigm=spec["paradigm"],
         target_fs=fs, cache_root=args.cache_root,
     )
     sessions = (1, 2, 3) if spec["dataset"] == "cog-bci" else (1,)
@@ -1118,7 +1127,8 @@ def _load_dataset_context(spec, args):
     )
     return {
         "spec": spec, "dataset_object": dataset,
-        "domains": domain_ids(dataset, "loso"),
+        "protocol": getattr(args, "protocol", "loso"),
+        "domains": domain_ids(dataset, getattr(args, "protocol", "loso")),
         "cache": os.path.abspath(cache),
     }
 
@@ -1155,7 +1165,8 @@ def main():
         with open(existing_metadata, encoding="utf-8") as stream:
             existing = json.load(stream)
         if (existing.get("source_calibration", "saved") != args.source_calibration
-                or existing.get("feature_location", "representation") != args.feature_location):
+                or existing.get("feature_location", "representation") != args.feature_location
+                or existing.get("protocol", "loso") != args.protocol):
             raise ValueError("Output directory contains a different analysis protocol; choose a new --output-dir")
     if args.batch_size < 1 or args.max_points_per_group < 1:
         raise ValueError("Batch size and max points must be positive")
@@ -1223,7 +1234,8 @@ def main():
             "cache": context["cache"], "split_config": split_config,
             "representative_fold": selection,
             "representative_reference_method": methods[-1]["label"],
-            "common_loso_subjects": common_subjects,
+            "protocol": args.protocol,
+            "common_subjects": common_subjects,
             "metric_subjects": metric_subjects,
             "runs": [
                 {"method": method["label"], "run_dir": info["run_dir"],
@@ -1413,6 +1425,7 @@ def main():
 
     provenance.update({
         "source_calibration": args.source_calibration,
+        "protocol": args.protocol,
         "feature_location": args.feature_location,
         "calibration_audits": calibration_records,
         "source_scaler_policy": "fit on analyzed source-train features after requested calibration, separately per method/fold",

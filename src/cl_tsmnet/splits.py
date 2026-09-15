@@ -264,3 +264,13 @@ def domain_ids(dataset, protocol):
     if protocol == "loso":
         return subject
     return subject * 1000 + session
+
+
+def split_domain_ids(dataset, protocol, split):
+    """Independent time-block statistics for within-subject adaptation."""
+    result = domain_ids(dataset, protocol).copy()
+    if protocol == "single_session":
+        result *= 10
+        for offset, partition in enumerate(("train", "val", "test"), 1):
+            result[np.asarray(split[partition], dtype=np.int64)] += offset
+    return result
