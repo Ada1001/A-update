@@ -212,7 +212,8 @@ def load_layout(channels,csv_path=None):
     return xy,source
 
 
-def draw_topomap(ax,values,xy,limit,backend="auto"):
+def draw_topomap(ax,values,xy,limit,backend="auto",vmin=None,cmap="RdBu_r"):
+    lower=-limit if vmin is None else vmin
     import matplotlib.pyplot as plt
     try:
         if backend=="matplotlib": raise ImportError()
@@ -223,16 +224,16 @@ def draw_topomap(ax,values,xy,limit,backend="auto"):
         gx,gy=np.meshgrid(np.linspace(-1,1,160),np.linspace(-1,1,160))
         z=griddata(xy,values,(gx,gy),method="linear")
         z[gx*gx+gy*gy>1]=np.nan
-        image=ax.imshow(z,extent=(-1,1,-1,1),origin="lower",cmap="RdBu_r",vmin=-limit,vmax=limit)
+        image=ax.imshow(z,extent=(-1,1,-1,1),origin="lower",cmap=cmap,vmin=lower,vmax=limit)
         ax.add_patch(plt.Circle((0,0),1,fill=False,color="black",lw=.5))
         ax.plot([-.1,0,.1],[.99,1.10,.99],color="black",lw=.5)
         ax.scatter(*xy.T,s=2,c="black"); ax.set(xlim=(-1.12,1.12),ylim=(-1.08,1.15),aspect="equal")
         ax.axis("off")
         return image
-    options=dict(axes=ax,show=False,cmap="RdBu_r",contours=3,sensors=True,
+    options=dict(axes=ax,show=False,cmap=cmap,contours=3,sensors=True,
                  sphere=(0.,0.,0.,1.),extrapolate="local",res=256)
-    if "vlim" in inspect.signature(mne.viz.plot_topomap).parameters: options["vlim"]=(-limit,limit)
-    else: options.update(vmin=-limit,vmax=limit)
+    if "vlim" in inspect.signature(mne.viz.plot_topomap).parameters: options["vlim"]=(lower,limit)
+    else: options.update(vmin=lower,vmax=limit)
     image,_=mne.viz.plot_topomap(values,xy,**options)
     for line in ax.lines: line.set_linewidth(.6)
     return image
@@ -254,39 +255,8 @@ def plot_representative_subjects(axes,post,subjects,selection,xy,limit,backend):
 
 
 def plot_figure(datasets,args):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from matplotlib.colors import Normalize
-    from matplotlib.cm import ScalarMappable
-    plt.rcParams.update({"font.family":"DejaVu Sans","font.size":6.5,"pdf.fonttype":42,"ps.fonttype":42})
-    fig=plt.figure(figsize=(7.16,1.35*len(datasets)+.65))
-    grid=fig.add_gridspec(len(datasets),9,width_ratios=[1,1,1,.22,1,1,1,1,1],
-                        left=.055,right=.985,top=.82,bottom=.19,hspace=.65,wspace=.06)
-    global_limit=max(float(np.max(np.abs(np.r_[d["pre"],d["post"]]))) for d in datasets)
-    for i,data in enumerate(datasets):
-        axes=[fig.add_subplot(grid[i,j]) for j in (0,1,2,4,5,6,7,8)]
-        limit=max(global_limit if args.color_scope=="global" else float(np.max(np.abs(np.r_[data["pre"],data["post"]]))),1e-12)
-        data["color_limit"]=limit
-        plot_group_level_topomaps(axes[:3],data["pre"],data["post"],data["xy"],limit,args.backend)
-        plot_representative_subjects(axes[3:],data["post"],data["subjects"],data["selection"],data["xy"],limit,args.backend)
-        pos=axes[0].get_position()
-        fig.text(.009,pos.y0+pos.height/2,data["display_name"],rotation=90,va="center",weight="bold",fontsize=8)
-        # Different units: contrast shares one scale; signed agreement has its own.
-        cax=fig.add_axes([pos.x0,pos.y0-.055,.20,.012])
-        cb=fig.colorbar(ScalarMappable(norm=Normalize(-limit,limit),cmap="RdBu_r"),cax=cax,orientation="horizontal")
-        cb.set_label("High − Low response (a.u.)",fontsize=6); cb.ax.tick_params(labelsize=5.5,pad=1)
-        pos3=axes[2].get_position()
-        cax2=fig.add_axes([pos3.x0,pos.y0-.055,pos3.width,.012])
-        cb2=fig.colorbar(ScalarMappable(norm=Normalize(-1,1),cmap="RdBu_r"),cax=cax2,orientation="horizontal",ticks=[-1,0,1])
-        cb2.set_label("Mean sign",fontsize=6); cb2.ax.tick_params(labelsize=5.5,pad=1)
-    fig.text(.05,.92,"(A) Group-level spatial response maps",weight="bold",fontsize=8)
-    fig.text(.44,.92,"(B) Representative subject examples",weight="bold",fontsize=8)
-    fig.text(.5,.99,"Learned spatial response patterns before and after graph propagation",ha="center",va="top",fontsize=8.5)
-    fig.text(.5,.025,"Held-out LOSO subjects • Equal subject weighting • Four BAcc-based examples and group mean",ha="center",fontsize=6)
-    for ext in ("pdf","png"):
-        fig.savefig(Path(args.output_dir)/("Fig6_node_response_topomaps."+ext),dpi=600)
-    plt.close(fig)
+    from analysis.fig6_reporting import plot_report
+    return plot_report(datasets,args)
 
 
 def main():
@@ -299,7 +269,18 @@ def main():
     p.add_argument("--seed",type=int,default=42); p.add_argument("--threads",type=int,default=1)
     p.add_argument("--backend",choices=["auto","mne","matplotlib"],default="auto")
     p.add_argument("--color-scope",choices=["dataset","global"],default="dataset")
+    p.add_argument("--replot-from",help="Audited Fig6 export directory; skips EEG/checkpoint loading")
+    p.add_argument("--color-mode",choices=["group-detail","shared-original"],default="group-detail")
+    p.add_argument("--bootstrap-replicates",type=int,default=5000)
+    p.add_argument("--layout",choices=["ab-three-rows","diagnostic"],default="ab-three-rows")
+    p.add_argument("--all-subjects-limit",type=float,default=10.,help="Symmetric atlas color limit; values outside saturate visually only")
     args=p.parse_args()
+    if not np.isfinite(args.all_subjects_limit) or args.all_subjects_limit<=0: p.error("all-subjects-limit must be finite and positive")
+    if args.bootstrap_replicates<100: p.error("bootstrap-replicates must be >=100")
+    if args.replot_from:
+        from analysis.fig6_reporting import replot_export
+        replot_export(args.replot_from,args)
+        return
     if args.batch_size<1 or args.threads<1: p.error("batch-size and threads must be positive")
     torch.manual_seed(args.seed); np.random.seed(args.seed); torch.set_num_threads(args.threads)
     settings=json.loads(Path(args.run_config).read_text(encoding="utf-8")) if args.run_config else {}
@@ -321,6 +302,7 @@ def main():
         if high not in classes: raise ValueError("Configured high_label absent")
         low=int(next(c for c in classes if c!=high))
         pre=[]; post=[]; scores=[]
+        class_maps={key:[] for key in ("pre_high","pre_low","post_high","post_low")}
         for subject in subjects:
             print("Extracting",spec["name"],subject,flush=True)
             values,audit=extract_subject(context,info,method,subject,args)
@@ -331,6 +313,7 @@ def main():
             for phase,destination in (("pre",pre),("post",post)):
                 result=compute_subject_contrast_topomap(values[phase],values["label"],high)
                 destination.append(result["delta"])
+                for label in ("high","low"): class_maps[phase+"_"+label].append(result[label])
                 for i,ch in enumerate(values["channels"]):
                     contrast_rows.append(dict(dataset=spec["name"],subject_id=subject,channel=ch,phase=phase,
                         low_response=result["low"][i],high_response=result["high"][i],contrast=result["delta"][i]))
@@ -345,7 +328,8 @@ def main():
             pair_rows.append(dict(dataset=spec["name"],subject_a=subjects[pair[0]],subject_b=subjects[pair[1]],pre=vpre,post=vpost))
         xy,layout_source=load_layout(list(ds["channels"]),conf.get("layout"))
         pd.DataFrame(dict(channel=ds["channels"],x=xy[:,0],y=xy[:,1],source=layout_source)).to_csv(out/(spec["name"]+"_layout.csv"),index=False)
-        data_rows.append(dict(display_name=spec["display_name"],pre=pre,post=post,xy=xy,subjects=subjects,selection=selection))
+        data_rows.append(dict(display_name=spec["display_name"],pre=pre,post=post,xy=xy,subjects=subjects,selection=selection,
+                              **{key:np.stack(value) for key,value in class_maps.items()}))
         print(spec["display_name"],"pre consistency",cpre["mean"],"post consistency",cpost["mean"],flush=True)
         direction=("Post-graph spatial response patterns were more consistent across the analyzed subjects (descriptive correlation increase)." if cpost["mean"]>cpre["mean"] else
             "Spatial consistency did not increase; these results do not support an improvement claim.") if mask.any() else "Consistency is undefined because no common valid pairs remain."
@@ -360,9 +344,10 @@ def main():
     pd.DataFrame(contrast_rows).to_csv(out/"fig6_subject_contrasts.csv",index=False)
     pd.DataFrame(all_scores).to_csv(out/"fig6_subject_bacc.csv",index=False)
     pd.DataFrame(pair_rows).to_csv(out/"fig6_pairwise_correlations.csv",index=False)
-    summaries.extend(["Raw contrast color limits (symmetric): "+str({d["display_name"]:d["color_limit"] for d in data_rows}),
-        "The third group panel is mean(sign(POST contrast)) across subjects, range [-1,1], with its own colorbar. Zero contrasts contribute zero. This is sign agreement, not Pearson correlation or significance.",
+    summaries.extend(["Original all-subject audit limits (display scales are in fig6_color_limits.csv): "+str({d["display_name"]:d["color_limit"] for d in data_rows}),
+        "The ab-three-rows layout displays High-Low, High and Low responses; diagnostic layout additionally displays sign agreement.",
         "The examples are selected by BAcc, not by map appearance. Pairwise correlations are dependent and no significance test is claimed. Class-conditioned contrasts are descriptive and do not establish decoding accuracy or repeatability. Changes in concentration have not been separately quantified."])
+    summaries.append((out/"fig6_reporting_notes.md").read_text(encoding="utf-8"))
     (out/"fig6_summary.md").write_text("\n\n".join(summaries),encoding="utf-8")
     f5._write_json(dict(arguments=vars(args),dataset_settings=settings),str(out/"fig6_provenance.json"))
 
