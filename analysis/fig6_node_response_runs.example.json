@@ -1,0 +1,10 @@
+{
+  "stew": {
+    "output_root": "outputs/fig5_stew_v3",
+    "master_summary": "outputs/fig5_stew_v3/master_summary.csv"
+  },
+  "eegmat": {
+    "output_root": "outputs/fig5_eegmat_v3",
+    "master_summary": "outputs/fig5_eegmat_v3/master_summary.csv"
+  }
+}
