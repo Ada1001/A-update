@@ -2,6 +2,10 @@ import copy
 import os
 import sys
 import warnings
+import csv
+import json
+import time
+import hashlib
 
 import numpy as np
 import torch
@@ -1471,6 +1475,29 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
             bn_scheduler = ConstantMomentumBatchNormScheduler(eta=.1, eta_test=.1)
         bn_scheduler.initialize()
         bn_scheduler.on_train_begin(SimpleNamespace(module_=model))
+    # Fig.7 provenance and incremental logs; does not change optimization or selection.
+    fold_subjects = sorted(int(v) for v in np.unique(dataset["meta"].iloc[split["test"]]["subject"]))
+    with open(__file__, "rb") as training_file:
+        training_source_sha256 = hashlib.sha256(training_file.read()).hexdigest()
+    validation_audit = {
+        "schema": 1, "dataset": dataset["name"], "method": model_type,
+        "fold_id": ",".join(map(str, fold_subjects)),
+        "selection_metric": "source_val_loss", "target_labels_for_selection": False,
+        "split_subjects": {key: sorted(int(v) for v in np.unique(dataset["meta"].iloc[ids]["subject"]))
+                           for key, ids in split.items()},
+        "split_index_sha256": {key: hashlib.sha256(np.asarray(ids,dtype=np.int64).tobytes()).hexdigest()
+                               for key,ids in split.items()},
+        "training_source_sha256": training_source_sha256,
+        "elapsed_definition": "elapsed from loop start through current source validation, including previous epoch bookkeeping; excludes setup and final target evaluation",
+    }
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        with open(os.path.join(output_dir,"source_validation_audit.json"),"w",encoding="utf-8") as audit_file:
+            json.dump(validation_audit,audit_file,indent=2)
+        with open(os.path.join(output_dir,"epoch_metrics.csv"),"w",encoding="utf-8"):
+            pass
+    if device.type == "cuda": torch.cuda.synchronize(device)
+    training_started = time.perf_counter()
     for epoch in range(1, int(epochs) + 1):
         if bn_scheduler is not None and tsmnet_bn_schedule == "momentum":
             bn_scheduler.on_epoch_begin(None)
@@ -1576,6 +1603,16 @@ def train_one_split(dataset, domains, split, project_root, output_dir=None,
         row = {"epoch": epoch, "train_loss": float(np.mean(batch_losses)),
                "val_loss": val_metrics["loss"],
                "val_bacc": val_metrics["balanced_accuracy"]}
+        if device.type == "cuda": torch.cuda.synchronize(device)
+        row.update(dataset=dataset["name"], method=model_type, fold_id=validation_audit["fold_id"],
+                   source_val_bacc=val_metrics["balanced_accuracy"],
+                   elapsed_training_seconds=time.perf_counter()-training_started,
+                   validation_scope="source_validation", selection_metric="source_val_loss")
+        if output_dir:
+            with open(os.path.join(output_dir,"epoch_metrics.csv"),"a",newline="",encoding="utf-8") as log_file:
+                writer=csv.DictWriter(log_file,fieldnames=list(row))
+                if epoch==1: writer.writeheader()
+                writer.writerow(row)
         history.append(row)
         if val_metrics["loss"] < best_loss:
             best_loss = val_metrics["loss"]
