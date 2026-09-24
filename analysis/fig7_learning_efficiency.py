@@ -21,6 +21,13 @@ METHODS={'eegnet':'EEGNet','eegconformer':'EEG-Conformer','bfgcn':'BF-GCN',
          'mdtn':'MDTN-GMDA','tsmnet':'TSMNet','ms_tgc_spddsbn':'AGMNet'}
 CURVES=['eegconformer','mdtn','tsmnet','ms_tgc_spddsbn']
 COLORS=['#777777','#4477AA','#AA3377','#228833','#CCBB44','#CC6677']
+MODEL_NAMES={k:{k} for k in METHODS}
+MODEL_NAMES['mdtn']={'mdtn','mdtn_gmda'}
+MODEL_NAMES['tsmnet']={'tsmnet_spddsbn'}
+
+
+def canonical_type(value):
+    return 'mdtn' if value in {'mdtn','mdtn_gmda'} else value
 
 
 def sha(path):
@@ -50,20 +57,22 @@ def resolve_directory(record,args):
 def discover(args):
     frames=[]
     for p in args.master_summary.split(','):
-        frame=pd.read_csv(p); frame['_master']=str(Path(p).resolve()); frames.append(frame)
+        frame=pd.read_csv(p).copy(); frame['_master']=str(Path(p).resolve()); frames.append(frame)
     master=pd.concat(frames,ignore_index=True)
     overrides=json.loads(Path(args.run_config).read_text(encoding='utf-8')) if args.run_config else {}
     runs=[]; issues=[]
     for dataset in args.datasets.split(','):
         for kind,name in METHODS.items():
-            subset=master[(master.dataset==dataset)&(master.protocol=='loso')&(master.model_type==kind)]
-            canonical='tsmnet_spddsbn' if kind=='tsmnet' else kind
-            subset=subset[subset.model==canonical] # excludes AGMNet sensitivity/ablation variants
-            override=overrides.get(dataset,{}).get(kind)
+            subset=master[(master.dataset==dataset)&(master.protocol=='loso')&(master.model_type.map(canonical_type)==kind)]
+            subset=subset[subset.model.isin(MODEL_NAMES[kind])] # exact aliases only; excludes ablations
+            choices=overrides.get(dataset,{})
+            override=choices.get(kind,choices.get('mdtn_gmda') if kind=='mdtn' else None)
+            candidates=subset.output_dir.astype(str).unique().tolist()
             if override:
                 subset=subset[subset.output_dir.astype(str).str.replace('\\','/',regex=False).str.rstrip('/')==str(override).replace('\\','/').rstrip('/')]
             if len(subset)==0:
-                issues.append(dict(dataset=dataset,method=name,severity='error',message='No canonical LOSO master record'))
+                message=('Configured output_dir not found: '+str(override)+'; available matching runs: '+str(candidates)) if override and candidates else 'No canonical LOSO master record (accepted model names: '+','.join(sorted(MODEL_NAMES[kind]))+')'
+                issues.append(dict(dataset=dataset,method=name,severity='error',message=message))
                 runs.append(dict(dataset=dataset,model_type=kind,missing=True)); continue
             if len(subset)>1:
                 distinct=subset.output_dir.astype(str).nunique()
@@ -73,6 +82,8 @@ def discover(args):
                 issues.append(dict(dataset=dataset,method=name,severity='warning',message='Repeated master rows for same directory; latest timestamp selected and checked against fold summary'))
                 subset=subset.sort_values('timestamp',kind='stable')
             record=clean(subset.iloc[-1].to_dict()); folder=resolve_directory(record,args)
+            record['_original_model_type']=record['model_type']
+            record['model_type']=kind
             run=dict(dataset=dataset,model_type=kind,record=record,folder=str(folder),missing=False)
             summary_path=folder/'summary.csv'
             if not summary_path.exists():
@@ -82,18 +93,23 @@ def discover(args):
             if not {'subject','test_bacc'}<=set(frame) or frame.subject.duplicated().any():
                 raise ValueError('Invalid fold summary: '+str(summary_path))
             for col,expected in [('dataset',dataset),('model_type',kind),('protocol','loso')]:
-                if col not in frame or set(frame[col])!={expected}: raise ValueError('Fold summary identity mismatch: '+str(summary_path))
+                values=frame[col].map(canonical_type) if col=='model_type' and col in frame else frame.get(col,pd.Series(dtype=str))
+                if col not in frame or set(values)!={expected}: raise ValueError('Fold summary identity mismatch: '+str(summary_path))
             subjects=sorted(frame.subject.astype(int).tolist()); run['subjects']=subjects
             run['summary_sha256']=sha(summary_path)
             if len(subjects)!=int(record['n']) or not np.isclose(frame.test_bacc.mean(),float(record['balanced_accuracy_mean']),atol=1e-7):
                 issues.append(dict(dataset=dataset,method=name,severity='error',message='Master summary and fold summary disagree; cannot pair this configuration with checkpoints'))
+            legacy_subjects=[]
             for subject in subjects:
                 fold=folder/('subject_%02d'%subject)
                 for filename in ['model.pt']+(['history.csv'] if kind in CURVES else []):
                     if not (fold/filename).exists() and not (filename=='history.csv' and (fold/'epoch_metrics.csv').exists()):
                         issues.append(dict(dataset=dataset,method=name,severity='error',message='Missing '+str(fold/filename)))
                 if kind in CURVES and not (fold/'source_validation_audit.json').exists():
-                    issues.append(dict(dataset=dataset,method=name,severity='warning',message=f'S{subject:02d}: legacy log lacks source-validation provenance; requires explicit --trust-legacy-source-validation'))
+                    legacy_subjects.append(subject)
+            if legacy_subjects:
+                issues.append(dict(dataset=dataset,method=name,severity='warning',subjects=legacy_subjects,
+                    message=f'{len(legacy_subjects)} folds lack legacy source-validation provenance; requires --trust-legacy-source-validation'))
             runs.append(run)
         good=[r for r in runs if r['dataset']==dataset and not r['missing']]
         if good:
@@ -101,10 +117,13 @@ def discover(args):
             for r in good[1:]:
                 if r['subjects']!=ref['subjects']:
                     issues.append(dict(dataset=dataset,method=METHODS[r['model_type']],severity='error',message='LOSO subject set differs between methods'))
-                differences=[key for key in ['seed','epochs','patience','batch_size','lr','weight_decay','val_size','augment','target_fs','artifact_z']
-                             if str(r['record'].get(key))!=str(ref['record'].get(key))]
+                keys=['seed','epochs','patience','batch_size','lr','weight_decay','val_size','augment','target_fs','artifact_z']
+                differences=[key for key in keys if key in r['record'] and key in ref['record'] and r['record'][key]!=ref['record'][key]]
+                unknown=[key for key in keys if (key in r['record'])!=(key in ref['record'])]
                 if differences:
                     issues.append(dict(dataset=dataset,method=METHODS[r['model_type']],severity='warning',message='Training protocol differs from '+METHODS[ref['model_type']]+': '+','.join(differences)))
+                if unknown:
+                    issues.append(dict(dataset=dataset,method=METHODS[r['model_type']],severity='warning',message='Training protocol cannot be compared because a record omits: '+','.join(unknown)))
     return runs,issues
 
 

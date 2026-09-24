@@ -28,7 +28,7 @@ def build(record,ds,split,checkpoint,device):
             **options('conformer_',dict(emb_size=40,depth=6,num_heads=5,dropout=.5,classifier_hidden=256))).to(device)
     elif kind=='bfgcn':
         model=t.build_bfgcn(c,classes,**options('bfgcn_',dict(kadj=2,num_out=16,att_hidden=16,classifier_hidden=32,avgpool=2,dropout=0.))).to(device)
-    elif kind=='mdtn_gmda':
+    elif kind=='mdtn':
         model=t.build_mdtn_gmda(c,classes,**options('mdtn_',dict(hidden_dim=64,num_nodes=0,kernel_length=16,num_heads=4,cheby_order=3,dropout=.5)),
                               max_iter=max(1,value(record,'epochs',30)*1000)).to(device)
     else: raise ValueError(kind)

@@ -88,3 +88,8 @@ mkdir -p results/fig7
 `FIG7_EFFICIENCY_ANALYSIS.md`、环境/输入/绘图审计JSON及每fold原始延迟数组。
 
 CSV BAcc以0–1保存，图仅乘100转换百分数。latency_summary从每fold相同次数的实际计时合并计算median/mean/SD/IQR；target BAcc为fold等权均值和样本SD。
+## MDTN-GMDA 名称和已有结果
+
+训练命令使用 `--model mdtn`，总表的 `model` 和实际目录名称使用 `mdtn_gmda`。图7兼容这两个精确名称，并统一使用内部键 `mdtn`；不会把带后缀的消融模型当作完整模型。不要手工修改总表名称或重命名训练目录。
+
+如果旧 `fig7_repaired_run_config.json` 中指定了 `stew_loso_mdtn` / `eegmat_loso_mdtn`，需要把对应 `mdtn` 项改成总表中实际的 `output_dir`，通常为 `outputs/fig7_retrained/stew_loso_mdtn_gmda` 和 `outputs/fig7_retrained/eegmat_loso_mdtn_gmda`。配置必须与总表记录一致。多个目录同时存在时仍要求显式选择，不按测试准确率自动挑选。模型训练成功但图7名称匹配失败，不需要因此重新训练。

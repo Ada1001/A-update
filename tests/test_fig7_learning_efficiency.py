@@ -70,11 +70,42 @@ def test_repair_commands_parse_and_preserve_recorded_protocol(tmp_path,monkeypat
     args=Namespace(output_dir=str(tmp_path),repair_root='outputs/fig7_test_repair',data_root='data',cache_root='outputs/cache')
     f.prepare_repairs(runs,args)
     plan=json.loads((tmp_path/'fig7_repair_plan.json').read_text())
+    config=json.loads((tmp_path/'fig7_repaired_run_config.json').read_text())
+    assert Path(config['stew']['mdtn']).name=='stew_loso_mdtn_gmda'
     for entry in plan:
         monkeypatch.setattr(sys,'argv',['run_experiment.py']+entry['command'][3:])
         parsed=run_experiment.parse_args()
         assert parsed.protocol=='loso' and parsed.epochs==17 and parsed.batch_size==32 and parsed.seed==9
         assert parsed.no_augment and parsed.subject is None
+
+
+@pytest.mark.parametrize('model_type',['mdtn','mdtn_gmda'])
+def test_mdtn_saved_alias_and_explicit_directory(tmp_path,model_type):
+    folder=tmp_path/'stew_loso_mdtn_gmda'; fold=folder/'subject_01'; fold.mkdir(parents=True)
+    (fold/'model.pt').touch(); (fold/'history.csv').touch()
+    pd.DataFrame([dict(subject=1,test_bacc=.75,dataset='stew',protocol='loso',model_type=model_type)]).to_csv(folder/'summary.csv',index=False)
+    row=dict(dataset='stew',protocol='loso',model_type=model_type,model='mdtn_gmda',
+             output_dir=str(folder),n=1,balanced_accuracy_mean=.75,timestamp='2026-01-01')
+    master=tmp_path/'master.csv'; pd.DataFrame([row]).to_csv(master,index=False)
+    args=Namespace(master_summary=str(master),run_config=None,datasets='stew',output_root=str(tmp_path))
+    runs,issues=f.discover(args)
+    run=next(r for r in runs if r['model_type']=='mdtn')
+    assert not run['missing'] and run['record']['model_type']=='mdtn'
+    assert not any(i['severity']=='error' and i['method']=='MDTN-GMDA' for i in issues)
+    config=tmp_path/'config.json'; config.write_text(json.dumps({'stew':{'mdtn':str(tmp_path/'stew_loso_mdtn')}}))
+    args.run_config=str(config)
+    _,issues=f.discover(args)
+    assert any('available matching runs' in i['message'] for i in issues)
+    config.write_text(json.dumps({'stew':{'mdtn_gmda':str(folder)}}))
+    runs,_=f.discover(args)
+    assert not next(r for r in runs if r['model_type']=='mdtn')['missing']
+    args.run_config=None
+    pd.DataFrame([row,dict(row,output_dir=str(tmp_path/'other'))]).to_csv(master,index=False)
+    _,issues=f.discover(args)
+    assert any(i['method']=='MDTN-GMDA' and 'Multiple run directories' in i['message'] for i in issues)
+    pd.DataFrame([dict(row,model='mdtn_gmda_ablation')]).to_csv(master,index=False)
+    runs,_=f.discover(args)
+    assert next(r for r in runs if r['model_type']=='mdtn')['missing']
 
 
 def test_source_audit_rejects_target_overlap(tmp_path):
