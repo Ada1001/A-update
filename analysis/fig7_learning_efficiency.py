@@ -27,7 +27,7 @@ MODEL_NAMES['tsmnet']={'tsmnet_spddsbn'}
 
 
 def canonical_type(value):
-    return 'mdtn' if value in {'mdtn','mdtn_gmda'} else value
+    return models.canonical_type(value)
 
 
 def sha(path):

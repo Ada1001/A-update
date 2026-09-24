@@ -7,6 +7,10 @@ from src.cl_tsmnet import training as t
 from src.cl_tsmnet.spd_pca import migrate_legacy_spddsbn_buffers
 
 
+def canonical_type(value):
+    return 'mdtn' if value in {'mdtn', 'mdtn_gmda'} else value
+
+
 def value(record,key,default):
     v=record.get(key)
     if v is None or (isinstance(v,float) and np.isnan(v)) or v=='': return default
@@ -14,7 +18,7 @@ def value(record,key,default):
 
 
 def build(record,ds,split,checkpoint,device):
-    kind=record['model_type']; c,s=ds['x'].shape[1:]; classes=len(np.unique(ds['y'][split['source_ids']]))
+    kind=canonical_type(record['model_type']); c,s=ds['x'].shape[1:]; classes=len(np.unique(ds['y'][split['source_ids']]))
     def options(prefix,defaults): return {k:value(record,prefix+k,v) for k,v in defaults.items()}
     if kind in ['tsmnet','ms_tgc_spddsbn']:
         if kind=='ms_tgc_spddsbn' and record.get('mstgc_architecture')!='shared_channel_graph_augmented_spd_v3':
@@ -31,7 +35,7 @@ def build(record,ds,split,checkpoint,device):
     elif kind=='mdtn':
         model=t.build_mdtn_gmda(c,classes,**options('mdtn_',dict(hidden_dim=64,num_nodes=0,kernel_length=16,num_heads=4,cheby_order=3,dropout=.5)),
                               max_iter=max(1,value(record,'epochs',30)*1000)).to(device)
-    else: raise ValueError(kind)
+    else: raise ValueError(f"Unsupported Fig7 model_type={record['model_type']!r} (canonical={kind!r}); adapter: {__file__}")
     state,migrations=migrate_legacy_spddsbn_buffers(f5._load_state(str(checkpoint)),model.state_dict())
     model.load_state_dict(state,strict=True)
     return model.eval(),migrations

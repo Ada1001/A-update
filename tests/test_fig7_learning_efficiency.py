@@ -60,6 +60,22 @@ def test_new_training_epoch_log_and_source_audit(tmp_path):
     assert audit['split_subjects']['val']==[2] and audit['split_subjects']['test']==[3]
 
 
+@pytest.mark.parametrize('kind',['mdtn','mdtn_gmda'])
+def test_mdtn_checkpoint_builder_aliases(tmp_path,kind):
+    torch.set_num_threads(1); torch.manual_seed(42)
+    original=t.build_mdtn_gmda(14,2).eval()
+    checkpoint=tmp_path/'model.pt'; torch.save(original.state_dict(),checkpoint)
+    ds={'x':np.random.default_rng(42).normal(size=(2,14,128)).astype(np.float32),'y':np.array([0,1])}
+    split={'source_ids':np.array([0,1])}
+    restored,_=m.build({'model_type':kind},ds,split,checkpoint,torch.device('cpu'))
+    inputs=m.prepare_input(kind,ds['x'],[1,1],128.,torch.device('cpu'))
+    with torch.no_grad():
+        expected=m.forward(original,'mdtn',inputs)
+        actual=m.forward(restored,kind,inputs)
+    torch.testing.assert_close(actual,expected)
+    assert f.canonical_type(kind)==m.canonical_type(kind)=='mdtn'
+
+
 def test_repair_commands_parse_and_preserve_recorded_protocol(tmp_path,monkeypatch):
     import run_experiment
     import sys
