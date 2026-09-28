@@ -50,6 +50,19 @@ def test_bool_config_is_not_python_string_truthiness():
     assert m.value({'flag':'False'},'flag',True) is False
 
 
+def test_environment_diff_identifies_exact_fields():
+    from argparse import Namespace
+    args=Namespace(warmup=100,repeats=1000,eval_batch_size=16)
+    env=dict(gpu='4090',gpu_uuid='A',host='old',torch='2.8')
+    signature=dict(environment=env,warmup=100,repeats=1000,eval_batch_size=16)
+    assert ext.environment_differences(signature,env,args)==[]
+    changed=dict(env,gpu_uuid='B',host='new')
+    diffs=ext.environment_differences(signature,changed,args)
+    assert {d['field'] for d in diffs}=={'environment.gpu_uuid','environment.host'}
+    args.repeats=2000
+    assert ext.environment_differences(signature,env,args)==[dict(field='repeats',previous=1000,current=2000)]
+
+
 def test_preserved_measurements_are_read_only_and_corruption_is_rejected(tmp_path):
     runs=[];result_files=[]
     for ds in ['stew','eegmat']:

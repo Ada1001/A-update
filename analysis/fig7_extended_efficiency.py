@@ -17,6 +17,41 @@ ALL={**ORIGINAL,**EXTRA}
 ORDER=['EEGNet','BiLSTM','TAHAG','LSCCN','EEG-Conformer','BF-GCN','MDTN-GMDA','TSMNet','AGMNet']
 
 
+def environment_differences(signature,environment,args):
+    differences=[]
+    previous=signature.get('environment',{})
+    for key in sorted(set(previous)|set(environment)):
+        if previous.get(key)!=environment.get(key):
+            differences.append(dict(field='environment.'+key,previous=previous.get(key),current=environment.get(key)))
+    for key in ['warmup','repeats','eval_batch_size']:
+        if signature.get(key)!=getattr(args,key):
+            differences.append(dict(field=key,previous=signature.get(key),current=getattr(args,key)))
+    return differences
+
+
+def check_environment(provenance,args,out):
+    device=torch.device('cuda:0' if args.device=='cuda' else 'cpu')
+    if device.type=='cuda' and not torch.cuda.is_available():
+        raise ValueError('CUDA unavailable; cannot compare against GPU measurements')
+    torch.set_num_threads(args.threads)
+    env=f.hardware(device);groups={}
+    for item in provenance:
+        for diff in environment_differences(item['signature'],env,args):
+            key=json.dumps(diff,sort_keys=True,default=str)
+            if key not in groups:groups[key]=dict(diff,affected_folds=0,example_result=item['result_file'])
+            groups[key]['affected_folds']+=1
+    differences=list(groups.values())
+    report=dict(passed=not differences,current_environment=env,differences=differences)
+    f.write_json(out/'fig7_environment_comparison.json',report)
+    if differences:
+        print('Environment/protocol differences (previous -> current):',flush=True)
+        for d in differences:
+            print(f"  {d['field']}: {d['previous']!r} -> {d['current']!r} ({d['affected_folds']} folds)",flush=True)
+        raise ValueError('Environment/protocol mismatch; see '+str(out/'fig7_environment_comparison.json'))
+    print('PASS: all preserved measurement environments and timing parameters match.',flush=True)
+    return env
+
+
 def read_original(root):
     runs=json.loads((root/'fig7_runs.json').read_text(encoding='utf-8'))
     rows=[]; provenance=[]
@@ -136,7 +171,7 @@ def plot(frame,out):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--stage',choices=['audit','all','plot'],default='audit')
+    p.add_argument('--stage',choices=['audit','environment','all','plot'],default='audit')
     p.add_argument('--existing-results',default='results/fig7_fixed_v2')
     p.add_argument('--master-summary',default='outputs/master_summary.csv,outputs/fig7_retrained/master_summary.csv')
     p.add_argument('--run-config',help='Explicit paths for additional models only; multiple candidates otherwise fail')
@@ -153,6 +188,8 @@ def main():
     if args.stage=='plot':
         plot(pd.read_csv(out/'fig7_efficiency_summary.csv'),out);return
     original,rows,provenance=read_original(old)
+    if args.stage=='environment':
+        check_environment(provenance,args,out);return
     runs,issues=discover_extra(args)
     paths=[]
     for run in original+runs:
@@ -171,12 +208,7 @@ def main():
             row=next(r for r in rows if (r['dataset'],r['method'],r['fold_id'])==(run['dataset'],ORIGINAL[run['model_type']],subject))
             if f.sha(cp)!=row['checkpoint_sha256']:raise ValueError('Preserved checkpoint differs: '+str(cp))
     if args.stage=='audit':return
-    device=torch.device('cuda:0' if args.device=='cuda' else 'cpu');torch.set_num_threads(args.threads)
-    env=f.hardware(device)
-    for item in provenance:
-        sig=item['signature']
-        if sig['environment']!=env or sig['warmup']!=args.warmup or sig['repeats']!=args.repeats or sig['eval_batch_size']!=args.eval_batch_size:
-            raise ValueError('Hardware/software or timing protocol differs from preserved measurements; no silent pooling')
+    env=check_environment(provenance,args,out)
     for ds in ['stew','eegmat']:
         local=argparse.Namespace(protocol='loso',data_root=args.data_root,cache_root=args.cache_root,
                                  target_fs_stew=None,target_fs_eegmat=None,target_fs_cog_bci=None)
