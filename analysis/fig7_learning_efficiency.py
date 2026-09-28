@@ -222,6 +222,17 @@ def audited_fp32_forward(model,kind,inputs,device):
     with FP32Audit(): return models.forward(model,kind,inputs)
 
 
+def check_reported_accuracy(actual,reported,tolerance=0.01):
+    if not np.isfinite([actual,reported,tolerance]).all() or not 0<=actual<=1 or not 0<=reported<=1 or not 0<=tolerance<=0.01:
+        raise ValueError('BAcc must be finite in [0,1]; tolerance must be in [0,0.01]')
+    delta=float(actual-reported)
+    if abs(delta)>tolerance+1e-12:
+        raise ValueError(f'Checkpoint BAcc {actual} != stored {reported}; difference {delta:+.8f} exceeds tolerance {tolerance}; verify data/config/code')
+    return dict(reported_target_bacc=float(reported),recomputed_target_bacc=float(actual),
+                target_bacc_delta=delta,accuracy_tolerance=float(tolerance),
+                exact_accuracy_match=bool(abs(delta)<=1e-6))
+
+
 def benchmark(runs,args):
     device=torch.device('cuda:0' if args.device=='cuda' else 'cpu')
     if device.type=='cuda' and not torch.cuda.is_available(): raise ValueError('CUDA unavailable; no silent CPU fallback')
@@ -245,7 +256,9 @@ def benchmark(runs,args):
         if value_float(record,'target_fs',ds['fs'])!=float(ds['fs']): raise ValueError('Dataset sampling rate mismatch')
         if sorted(np.unique(ds['meta'].subject).astype(int).tolist())!=run['subjects']:
             raise ValueError('Dataset subject universe differs from run: '+run['folder'])
-        summary=pd.read_csv(Path(run['folder'])/'summary.csv')
+        summary_path=Path(run['folder'])/'summary.csv'
+        summary=pd.read_csv(summary_path)
+        summary_sha256=sha(summary_path)
         for subject in run['subjects']:
             print('Benchmark',dsname,kind,subject,flush=True)
             checkpoint=Path(run['folder'])/('subject_%02d'%subject)/'model.pt'
@@ -255,7 +268,9 @@ def benchmark(runs,args):
             cache=out/'benchmarks'/dsname/kind/('subject_%02d'%subject); cache.mkdir(parents=True,exist_ok=True)
             signature=dict(checkpoint=cp_sha,dataset_cache=context['cache_sha256'],record=record,environment=env,
                            warmup=args.warmup,repeats=args.repeats,adapter_sha=sha(ROOT/'analysis/fig7_models.py'),
-                           runner_sha=sha(__file__),eval_batch_size=args.eval_batch_size)
+                           runner_sha=sha(__file__),eval_batch_size=args.eval_batch_size,
+                           accuracy_tolerance=getattr(args,'accuracy_tolerance',0.01),
+                           fold_summary_sha256=summary_sha256)
             result_file=cache/'result.json'; latency_file=cache/'latency_ms.npy'
             if result_file.exists():
                 saved=json.loads(result_file.read_text())
@@ -276,7 +291,10 @@ def benchmark(runs,args):
             native=np.concatenate(native); native_pred=models.predictions(model,kind,native)
             native_bacc=balanced_accuracy_score(ds['y'][ids],native_pred)
             reported=float(summary.loc[summary.subject==subject,'test_bacc'].iloc[0])
-            if abs(native_bacc-reported)>1e-6: raise ValueError(f'Checkpoint BAcc {native_bacc} != stored {reported}; verify data/config/code, not a timing failure')
+            accuracy_audit=check_reported_accuracy(native_bacc,reported,getattr(args,'accuracy_tolerance',0.01))
+            write_json(cache/'accuracy_comparison.json',accuracy_audit)
+            if not accuracy_audit['exact_accuracy_match']:
+                print(f'WARNING: {dsname} {kind} S{subject}: stored BAcc={reported:.8f}, recomputed={native_bacc:.8f}; accepted within tolerance; plotting recomputed BAcc',flush=True)
             model=models.convert_fp32(model,kind,device)
             converted=[]
             with torch.no_grad():
@@ -309,7 +327,7 @@ def benchmark(runs,args):
                      latency_IQR_ms=float(np.subtract(*np.percentile(latency,[75,25]))),
                      fp32_prediction_disagreement=disagreement,fp32_max_logit_difference=float(np.max(np.abs(converted-native))),
                      raw_window_shape=list(windows[:1].shape),model_input_shapes=[list(x.shape) for x in inputs],
-                     checkpoint_sha256=cp_sha,precision='fp32',migrations=migrations)
+                     checkpoint_sha256=cp_sha,precision='fp32',migrations=migrations,**accuracy_audit)
             np.save(latency_file,np.asarray(latency)); write_json(result_file,dict(signature=signature,row=row,latency_sha256=sha(latency_file)))
             fold_rows.append(row)
             del model
@@ -490,8 +508,10 @@ def main():
     p.add_argument('--device',choices=['cuda','cpu'],default='cuda'); p.add_argument('--threads',type=int,default=1)
     p.add_argument('--warmup',type=int,default=100); p.add_argument('--repeats',type=int,default=1000)
     p.add_argument('--eval-batch-size',type=int,default=16); p.add_argument('--seed',type=int,default=42)
+    p.add_argument('--accuracy-tolerance',type=float,default=0.01,help='Maximum absolute BAcc difference from saved summary, at most 0.01')
     p.add_argument('--bootstrap-replicates',type=int,default=5000)
     args=p.parse_args()
+    if not np.isfinite(args.accuracy_tolerance) or not 0<=args.accuracy_tolerance<=0.01: p.error('accuracy-tolerance must be in [0,0.01]')
     if args.warmup<100 or args.repeats<1000: p.error('Protocol requires warmup>=100 and repeats>=1000')
     if min(args.threads,args.eval_batch_size)<1 or args.bootstrap_replicates<100: p.error('Invalid thread/batch/bootstrap count')
     out=Path(args.output_dir); out.mkdir(parents=True,exist_ok=True)

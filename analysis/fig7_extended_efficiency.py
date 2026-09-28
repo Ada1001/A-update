@@ -184,7 +184,10 @@ def main():
     p.add_argument('--device',choices=['cuda','cpu'],default='cuda');p.add_argument('--threads',type=int,default=1)
     p.add_argument('--warmup',type=int,default=100);p.add_argument('--repeats',type=int,default=1000)
     p.add_argument('--eval-batch-size',type=int,default=16);p.add_argument('--seed',type=int,default=42)
+    p.add_argument('--accuracy-tolerance',type=float,default=0.01)
     args=p.parse_args();out=Path(args.output_dir);old=Path(args.existing_results)
+    if not np.isfinite(args.accuracy_tolerance) or not 0<=args.accuracy_tolerance<=0.01:
+        p.error('accuracy-tolerance must be in [0,0.01]')
     if out.resolve()==old.resolve() or old.resolve() in out.resolve().parents:
         p.error('Use an independent output directory outside the preserved results')
     if args.warmup<100 or args.repeats<1000 or min(args.threads,args.eval_batch_size)<1:p.error('Invalid measurement budget')

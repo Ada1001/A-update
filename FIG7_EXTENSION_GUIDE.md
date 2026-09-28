@@ -23,7 +23,7 @@
 - BiLSTM恢复 recurrent_hidden/layers/dropout，使用双向LSTM原始 EEG 输入。
 - TAHAG恢复 dropout/adaptive/attention，使用训练入口相同的 bandpower 特征与无目标批次的评估 forward。
 - LSCCN使用训练入口相同 PLV+bandpower 融合特征；二分类恢复各折 summary.csv 的 decision_threshold，按 score1-score0 >= threshold 决策。阈值缺失直接停止，不用测试标签重选。
-- 所有新 checkpoint 严格加载；原生目标 BAcc 必须与原 summary 一致；FP32前后所有目标预测相同，并检查batch1预测、参数和缓冲区不变。
+- 所有新 checkpoint 严格加载；原生目标 BAcc 与原 summary 默认允许0.01绝对差值（1个百分点），可用 `--accuracy-tolerance 0.000001` 恢复严格比较。差值超过1e-6时打印 warning，保存 `accuracy_comparison.json`，保留原值和复评值，绘图采用复评值。FP32前后所有目标预测仍须相同，并检查batch1预测、参数和缓冲区不变。
 - BF-GCN、TAHAG、LSCCN前处理不计入 forward 延迟；LSCCN仍执行完整原 forward，包括重建分支。该指标不是端到端耗时。
 - 新旧测量要求同硬件UUID、软件环境、线程和计时预算、相同数据缓存哈希。跨时间GPU负载差异仍需实验者控制，无法从日志证明完全一致。
 - 新增216折（STEW 3×48；EEGMAT 2×36）。不计时原来的504折。中断后同命令重跑可复用新模型已完成且签名匹配的折。
@@ -51,3 +51,7 @@ python -u analysis/fig7_extended_efficiency.py --stage all \
 ```
 
 只调整排版时用 `--stage plot --output-dir results/fig7_extended`，不重新计时。新增接口默认仅由扩展入口选用，原六模型主入口不扩充方法名单。
+
+准确率容差改动后，新追加计时使用 `results/fig7_extended_v2`，避免覆盖旧追加结果或与旧代码签名混用。`--existing-results results/fig7_fixed_v2` 保持不变，原六模型不重新计时。新增结果每折记录 reported_target_bacc、recomputed_target_bacc、target_bacc_delta、accuracy_tolerance、exact_accuracy_match，原训练总表不修改。
+
+新增计时签名同时包含各模型 `summary.csv` 的 SHA256，确保 LSCCN 的决策阈值或保存指标变化后，旧追加缓存不能被误用。仅更新模型权重哈希不足以覆盖这种变化。

@@ -50,6 +50,19 @@ def test_bool_config_is_not_python_string_truthiness():
     assert m.value({'flag':'False'},'flag',True) is False
 
 
+def test_accuracy_tolerance_and_audit():
+    audit=f.check_reported_accuracy(.6966666666666667,.69,.01)
+    assert not audit['exact_accuracy_match']
+    assert audit['target_bacc_delta']==pytest.approx(.0066666666666667)
+    assert audit['reported_target_bacc']==.69
+    assert audit['recomputed_target_bacc']==pytest.approx(.6966666666666667)
+    f.check_reported_accuracy(.70,.69,.01)
+    with pytest.raises(ValueError):f.check_reported_accuracy(.701,.69,.01)
+    with pytest.raises(ValueError):f.check_reported_accuracy(.6966666667,.69,1e-6)
+    for bad in [float('nan'),float('inf'),-.1,1.1]:
+        with pytest.raises(ValueError):f.check_reported_accuracy(bad,.69,.01)
+
+
 def test_environment_diff_identifies_exact_fields():
     from argparse import Namespace
     args=Namespace(warmup=100,repeats=1000,eval_batch_size=16)
