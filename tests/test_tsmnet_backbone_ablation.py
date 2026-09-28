@@ -60,3 +60,38 @@ def test_train_export_and_figures(tmp_path):
     assert (tmp_path/"fig5_tsmnet"/"fig5_tsmnet_backbone.pdf").exists()
     with pytest.raises(FileExistsError):
         runner.train_fold(context,21,"tsmnet",args)
+    args.resume=True
+    before=runner.digest(tmp_path/'tsmnet'/'folds'/'subject_21'/'model.pt')
+    assert runner.train_fold(context,21,'tsmnet',args)['variant']=='tsmnet'
+    assert runner.digest(tmp_path/'tsmnet'/'folds'/'subject_21'/'model.pt')==before
+    args.lr=.02
+    with pytest.raises(ValueError,match='configuration mismatch'):
+        runner.train_fold(context,21,'tsmnet',args)
+
+
+def test_target_batch_boundaries_are_preserved():
+    class BatchSensitive(torch.nn.Module):
+        def forward(self,x,d,intermediates):
+            # Deterministic fixture makes changes in batch composition observable.
+            logits=x+x.mean(0)
+            return logits,dict(features=x)
+    model=BatchSensitive()
+    x=torch.arange(14.).reshape(7,2); tx=torch.arange(10.).reshape(5,2)
+    d=torch.ones(7,dtype=torch.long); td=torch.full((5,),2,dtype=torch.long)
+    baseline=runner.extract(model,tx,td,4)['logits']
+    old=runner.extract(model,torch.cat([x,tx]),torch.cat([d,td]),4)['logits'][7:]
+    assert not np.array_equal(old,baseline)
+    fixed=runner.extract_partitions(model,x,d,tx,td,4)
+    np.testing.assert_array_equal(fixed['logits'][7:],baseline)
+    np.testing.assert_array_equal(fixed['features'],torch.cat([x,tx]).numpy())
+
+
+def test_incomplete_fold_is_archived_not_overwritten(tmp_path):
+    folder=tmp_path/'subject_07';folder.mkdir();(folder/'model.pt').write_bytes(b'preserve')
+    args=SimpleNamespace(restart_incomplete=False)
+    with pytest.raises(ValueError,match='Incomplete fold'):runner.resume_fold(folder,args)
+    args.restart_incomplete=True
+    assert runner.resume_fold(folder,args) is None
+    backups=list(tmp_path.glob('subject_07.incomplete-*'))
+    assert len(backups)==1 and (backups[0]/'model.pt').read_bytes()==b'preserve'
+    assert not folder.exists()

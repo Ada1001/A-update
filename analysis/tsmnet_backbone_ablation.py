@@ -4,6 +4,7 @@ import copy
 import json
 from pathlib import Path
 import sys
+from datetime import datetime, timezone
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 import numpy as np
@@ -52,8 +53,52 @@ def training_batches(domains,batch_size,seed):
     return [batches[i] for i in torch.randperm(len(batches),generator=generator).tolist()]
 
 
+def extract_partitions(model,x,d,tx,td,batch_size):
+    # Keep target batch boundaries identical to the pre-calibration evaluation.
+    # Concatenating inputs first shifts target batches when len(x) % batch_size != 0.
+    source=extract(model,x,d,batch_size)
+    target=extract(model,tx,td,batch_size)
+    return {k:np.concatenate([source[k],target[k]]) for k in source}
+
+
+def resume_fold(out,args):
+    """Reuse audited complete exports; archive incomplete work only explicitly."""
+    required=['model.pt','audit.json','scores.json','training_config.json',
+              'history.csv','preprocessing.npz','samples.csv','paired_spd.npz']
+    if all((out/name).is_file() for name in required):
+        config=json.loads((out/'training_config.json').read_text(encoding='utf-8'))
+        old=config['arguments']; current=vars(args)
+        keys=['protocol','datasets','seed','epochs','patience','batch_size','lr','weight_decay',
+              'val_size','single_val_size','test_size','spatial_filters','subspacedims',
+              'data_root','cache_root']
+        differences=[k for k in keys if old.get(k)!=current.get(k)]
+        if differences:
+            raise ValueError('Resume configuration mismatch '+str(out)+': '+str(differences))
+        audit=json.loads((out/'audit.json').read_text(encoding='utf-8'))
+        for filename,key in [('model.pt','checkpoint_sha256'),('paired_spd.npz','archive_sha256'),('samples.csv','metadata_sha256')]:
+            if digest(out/filename)!=audit.get(key):
+                raise ValueError('Resume hash mismatch: '+str(out/filename))
+        if not audit.get('passed') or not audit.get('target_predictions_identical'):
+            raise ValueError('Cannot resume failed audit: '+str(out))
+        print('Reusing audited fold',out,flush=True)
+        return json.loads((out/'scores.json').read_text(encoding='utf-8'))
+    if out.exists() and any(out.iterdir()):
+        if not getattr(args,'restart_incomplete',False):
+            raise ValueError('Incomplete fold: '+str(out)+'; use --resume --restart-incomplete to archive and retrain only incomplete folds')
+        parent=out.parent.resolve(); source=out.resolve()
+        backup=parent/(out.name+'.incomplete-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
+        if source.parent!=parent or backup.resolve().parent!=parent:
+            raise ValueError('Archive path escapes fold directory')
+        source.rename(backup)
+        print('Archived incomplete fold:',backup,flush=True)
+    return None
+
+
 def train_fold(context,subject,variant,args):
     out=Path(args.output_dir)/variant/"folds"/("subject_%02d"%subject)
+    if getattr(args,'resume',False):
+        scores=resume_fold(out,args)
+        if scores is not None: return scores
     if (out/"model.pt").exists():
         raise FileExistsError("Preserving existing checkpoint: "+str(out))
     out.mkdir(parents=True,exist_ok=True)
@@ -132,10 +177,14 @@ def train_fold(context,subject,variant,args):
     if set(changed)-allowed:
         raise ValueError("Source refit altered weights or non-source buffers: "+str(set(changed)-allowed))
     ids=np.concatenate([source,target])
-    values=extract(model,torch.cat([x,tx]),torch.cat([d,td]),args.batch_size)
+    values=extract_partitions(model,x,d,tx,td,args.batch_size)
     actual=values["logits"][len(source):]
     if not np.allclose(actual,baseline,atol=1e-6,rtol=1e-6) or not np.array_equal(actual.argmax(1),baseline.argmax(1)):
-        raise ValueError("Source calibration changed target predictions")
+        diagnostic=dict(max_abs_logit_delta=float(np.max(np.abs(actual-baseline))),
+            changed_predictions=int(np.sum(actual.argmax(1)!=baseline.argmax(1))),
+            target_samples=len(target),batch_size=args.batch_size,identical_target_batches=True)
+        f5._write_json(diagnostic,str(out/'calibration_failure.json'))
+        raise ValueError("Source calibration changed target predictions: "+str(diagnostic))
     meta=f5._feature_metadata(ds,ids,domains,source)
     meta["fold_id"]=subject
     meta["true_label"]=meta.class_id
@@ -147,6 +196,7 @@ def train_fold(context,subject,variant,args):
         checkpoint_sha256=sha,checkpoint_unchanged=digest(out/"model.pt")==sha,
         target_predictions_identical=True,target_logit_max_abs_delta=float(np.max(np.abs(actual-baseline))),
         changed_source_buffers=changed,source_calibration="source training only",
+        extraction_batching="separate_source_target_v2",
         target_refit_scope="target_only" if model.adaptive else "none",
         archive_sha256=digest(out/"paired_spd.npz"),metadata_sha256=digest(out/"samples.csv"),
         model_config=dict(variant=variant,nchannels=ds["x"].shape[1],nsamples=ds["x"].shape[2],
@@ -247,6 +297,8 @@ def plot_fig5(subjects,args):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--stage",choices=["train","plot","all"],default="all")
+    p.add_argument("--resume",action="store_true",help="Reuse completed, audited folds with matching training configuration")
+    p.add_argument("--restart-incomplete",action="store_true",help="With --resume, archive incomplete folds and retrain them")
     p.add_argument("--figures",choices=["all","fig4","fig5"],default="all")
     p.add_argument("--protocol",choices=["single_session","loso"],default="single_session")
     p.add_argument("--datasets",default="stew"); p.add_argument("--dataset-labels",default="STEW")
@@ -264,6 +316,7 @@ def main():
     p.add_argument("--threads",type=int,default=1); p.add_argument("--max-points",type=int,default=200)
     p.add_argument("--reducer",choices=["tsne","umap"],default="tsne")
     args=p.parse_args()
+    if args.restart_incomplete and not args.resume: p.error('--restart-incomplete requires --resume')
     for k in ("epochs","patience","batch_size","spatial_filters","subspacedims","threads","max_points"):
         if getattr(args,k)<1: p.error(k+" must be positive")
     torch.set_num_threads(args.threads)
@@ -273,12 +326,16 @@ def main():
     if args.stage=="all" and args.figures in ("all","fig5") and not {"mean-ce","mean-eudsbn","augspd-spdbn",args.fourth_model}<=set(models):
         p.error("Fig5 needs mean-ce,mean-eudsbn,augspd-spdbn and --fourth-model; use --stage train for individual models")
     if args.stage in ("train","all"):
-        if (out/"experiment.json").exists(): raise FileExistsError("Use a fresh output directory or --stage plot")
+        if (out/"experiment.json").exists() and not args.resume: raise FileExistsError("Use a fresh output directory or --stage plot")
         args.target_fs_stew=args.target_fs_eegmat=args.target_fs_cog_bci=None
         specs=f5._parse_datasets(args.datasets,args.dataset_labels)
         if len(specs)!=1: p.error("One dataset per experiment")
         context=f5._load_dataset_context(specs[0],args)
         subjects=sorted(context["dataset_object"]["meta"].subject.unique().astype(int)) if args.subjects=="all" else list(map(int,args.subjects.split(",")))
+        if args.resume and (out/'experiment.json').exists():
+            previous=json.loads((out/'experiment.json').read_text(encoding='utf-8'))
+            if previous['subjects']!=subjects or previous['models']!=models:
+                raise ValueError('Resume cannot change the completed experiment subject/model list')
         scores=[]
         for subject in subjects:
             for variant in models:
