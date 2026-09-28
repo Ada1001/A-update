@@ -114,7 +114,7 @@ def aggregate(rows,hardware):
     return pd.DataFrame(records)
 
 
-def plot(frame,out):
+def plot(frame,out,curves=None,basename='Fig7_extended_efficiency'):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -127,15 +127,35 @@ def plot(frame,out):
         for col,ds in enumerate(['stew','eegmat']):
             g=frame[frame.dataset==ds].set_index('method').reindex(ORDER)
             ax=axes[0,col]
-            for j,method in enumerate(ORDER):
-                row=g.loc[method]
-                if pd.isna(row.mean_target_bacc):
-                    ax.text(51,j,'not available',color='#777777',fontsize=7)
-                    continue
-                ax.errorbar(row.mean_target_bacc*100,j,xerr=row.std_target_bacc*100,
-                            fmt='o',color=colors[method],capsize=2,ms=5)
-            ax.set_yticks(range(len(ORDER)),ORDER);ax.invert_yaxis();ax.set_xlim(35,100)
-            ax.set_xlabel('Target BAcc (%) — mean ± subject SD')
+            if curves is None:
+                for j,method in enumerate(ORDER):
+                    row=g.loc[method]
+                    if pd.isna(row.mean_target_bacc):
+                        ax.text(51,j,'not available',color='#777777',fontsize=7)
+                        continue
+                    ax.errorbar(row.mean_target_bacc*100,j,xerr=row.std_target_bacc*100,
+                                fmt='o',color=colors[method],capsize=2,ms=5)
+                ax.set_yticks(range(len(ORDER)),ORDER);ax.invert_yaxis();ax.set_xlim(35,100)
+                ax.set_xlabel('Target BAcc (%) — mean ± subject SD')
+            else:
+                styles=['-', '--', '-.', ':', '--', '-.', '-']
+                methods=[m for m in ORDER if m not in {'EEGNet','BF-GCN'}]
+                for i,method in enumerate(methods):
+                    points=curves[(curves.dataset==ds)&(curves.method==method)].sort_values('epoch')
+                    if points.empty:continue
+                    usable=points.eligible.astype(str).str.lower().isin(['true','1'])
+                    y=points.mean_val_bacc.where(usable)*100
+                    ax.plot(points.epoch,y,color=colors[method],ls=styles[i],
+                            lw=1.7 if method=='AGMNet' else 1.2,label=method)
+                    ax.fill_between(points.epoch.to_numpy(),points.ci_low.where(usable).to_numpy()*100,
+                                    points.ci_high.where(usable).to_numpy()*100,color=colors[method],alpha=.07,lw=0)
+                ax.set_xlabel('Epoch');ax.set_ylabel('Source-validation BAcc (%)')
+                eligible=curves[curves.eligible.astype(str).str.lower().isin(['true','1'])]
+                ax.set_xlim(1,max(2,float(eligible.epoch.max())))
+                ax.set_ylim(max(0,float(eligible.ci_low.min())*100-3),min(100,float(eligible.ci_high.max())*100+3))
+                ax.legend(loc='best',ncol=2,fontsize=6,framealpha=.85)
+                from matplotlib.ticker import MaxNLocator
+                ax.xaxis.set_major_locator(MaxNLocator(integer=True,nbins=6))
             ax.set_title(f'({"ab"[col]}) {ds.upper()}');ax.grid(axis='x',alpha=.18)
             ax=axes[1,col]
             annotations=[];points=[]
@@ -150,9 +170,12 @@ def plot(frame,out):
             ax.set_xlabel('Inference latency (ms/window; log scale)');ax.set_ylabel('Target BAcc (%)')
             ax.set_title(f'({"cd"[col]}) {ds.upper()}');ax.grid(alpha=.18)
             label_groups.append((ax,annotations,points))
-        fig.suptitle('Predictive performance and computational cost',fontsize=11)
-        fig.supxlabel('FP32, batch=1. BF-GCN / TAHAG / LSCCN feature preprocessing excluded.\n'
-                      'SVM not measured; EEGMAT LSCCN unavailable. Independent methods are not connected by curves.',fontsize=7)
+        fig.suptitle('Predictive performance and computational cost' if curves is None else 'Learning dynamics and computational efficiency',fontsize=11)
+        footnote=('FP32, batch=1; median latency. BF-GCN / TAHAG / LSCCN preprocessing excluded.\n'
+                  'SVM not measured; EEGMAT LSCCN unavailable.')
+        if curves is not None:
+            footnote+=' Curves: real epochs, >=80% fold coverage; descriptive bootstrap intervals.\nHistorical validation protocols differ; curves do not establish comparable adaptation performance.'
+        fig.supxlabel(footnote,fontsize=6.5)
         fig.canvas.draw();renderer=fig.canvas.get_renderer()
         for ax,annotations,points in label_groups:
             occupied=[Bbox.from_bounds(px-5,py-5,10,10) for px,py in ax.transData.transform(points)]
@@ -169,7 +192,7 @@ def plot(frame,out):
                 ann.set_position(best[2:4]);ann.set_ha(best[4]);occupied.append(best[5])
                 if best[0]: print('Layout warning: inspect label',ann.get_text())
         for ext in ['pdf','png']:
-            fig.savefig(out/f'Fig7_extended_efficiency.{ext}',dpi=600)
+            fig.savefig(out/f'{basename}.{ext}',dpi=600)
         plt.close(fig)
 
 
