@@ -273,7 +273,7 @@ def benchmark(runs,args):
                     logits=models.forward(model,kind,inputs)
                     if not torch.isfinite(logits).all(): raise ValueError('Non-finite native checkpoint output')
                     native.append(logits.detach().cpu().numpy())
-            native=np.concatenate(native); native_pred=native.argmax(1)
+            native=np.concatenate(native); native_pred=models.predictions(model,kind,native)
             native_bacc=balanced_accuracy_score(ds['y'][ids],native_pred)
             reported=float(summary.loc[summary.subject==subject,'test_bacc'].iloc[0])
             if abs(native_bacc-reported)>1e-6: raise ValueError(f'Checkpoint BAcc {native_bacc} != stored {reported}; verify data/config/code, not a timing failure')
@@ -285,7 +285,7 @@ def benchmark(runs,args):
                     converted.append(models.forward(model,kind,inputs).detach().cpu().numpy())
             converted=np.concatenate(converted)
             if not np.isfinite(converted).all(): raise ValueError('FP32 port unstable; cannot publish uniform-FP32 timing for this checkpoint')
-            disagreement=float(np.mean(converted.argmax(1)!=native_pred))
+            disagreement=float(np.mean(models.predictions(model,kind,converted)!=native_pred))
             if disagreement>0: raise ValueError(f'FP32 changes {disagreement:.2%} target predictions; refusing to pair native accuracy with FP32 latency')
             inputs=models.prepare_input(kind,windows[:1],domains[:1],ds['fs'],device)
             state={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}
@@ -294,7 +294,7 @@ def benchmark(runs,args):
                 if device.type=='cuda': torch.cuda.synchronize(device)
             with torch.no_grad():
                 checked=audited_fp32_forward(model,kind,inputs,device)
-                if not np.array_equal(checked.argmax(1).cpu().numpy(),native_pred[:1]): raise ValueError('Batch-one prediction mismatch')
+                if not np.array_equal(models.predictions(model,kind,checked.cpu().numpy()),native_pred[:1]): raise ValueError('Batch-one prediction mismatch')
                 for _ in range(args.warmup): models.forward(model,kind,inputs)
                 sync(); latency=[]
                 for _ in range(args.repeats):

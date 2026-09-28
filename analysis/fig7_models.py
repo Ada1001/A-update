@@ -2,6 +2,7 @@
 import types
 import numpy as np
 import torch
+import pandas as pd
 from analysis import fig5_representation_alignment as f5
 from src.cl_tsmnet import training as t
 from src.cl_tsmnet.spd_pca import migrate_legacy_spddsbn_buffers
@@ -14,6 +15,9 @@ def canonical_type(value):
 def value(record,key,default):
     v=record.get(key)
     if v is None or (isinstance(v,float) and np.isnan(v)) or v=='': return default
+    if isinstance(default,bool) and isinstance(v,str):
+        if v.lower() not in {'true','false','1','0'}: raise ValueError('Invalid boolean '+key+': '+v)
+        return v.lower() in {'true','1'}
     return type(default)(v) if default is not None else v
 
 
@@ -35,6 +39,23 @@ def build(record,ds,split,checkpoint,device):
     elif kind=='mdtn':
         model=t.build_mdtn_gmda(c,classes,**options('mdtn_',dict(hidden_dim=64,num_nodes=0,kernel_length=16,num_heads=4,cheby_order=3,dropout=.5)),
                               max_iter=max(1,value(record,'epochs',30)*1000)).to(device)
+    elif kind=='bilstm':
+        model=t.build_temporal_baseline(kind,c,s,classes,
+            recurrent_hidden=value(record,'recurrent_hidden',64),
+            recurrent_layers=value(record,'recurrent_layers',1),
+            recurrent_dropout=value(record,'recurrent_dropout',.5)).to(device)
+    elif kind=='tahag':
+        model=t.build_tahag(c,classes,**options('tahag_',dict(dropout=.25,adaptive=True,attention=True))).to(device)
+    elif kind=='lsccn':
+        model=t.build_lsccn(c,c+len(t.BFGCN_FEATURE_BANDS),classes,
+            **options('lsccn_',dict(latent_dim=200,routing_iters=3))).to(device)
+        if classes==2:
+            summary=pd.read_csv(checkpoint.parent.parent/'summary.csv')
+            subject=int(checkpoint.parent.name.removeprefix('subject_'))
+            rows=summary.loc[summary.subject==subject]
+            if len(rows)!=1 or 'decision_threshold' not in rows or not np.isfinite(float(rows.decision_threshold.iloc[0])):
+                raise ValueError('LSCCN requires the saved per-fold validation decision_threshold')
+            model.fig7_decision_threshold=float(rows.decision_threshold.iloc[0])
     else: raise ValueError(f"Unsupported Fig7 model_type={record['model_type']!r} (canonical={kind!r}); adapter: {__file__}")
     state,migrations=migrate_legacy_spddsbn_buffers(f5._load_state(str(checkpoint)),model.state_dict())
     model.load_state_dict(state,strict=True)
@@ -92,6 +113,9 @@ def convert_fp32(model,kind,device):
 
 
 def prepare_input(kind,windows,domains,fs,device):
+    if kind in {'tahag','lsccn'}:
+        features=t._bfgcn_bandpower_features(windows,fs) if kind=='tahag' else t._lsccn_fused_features(windows,fs)
+        return (torch.from_numpy(features).to(device),)
     if kind=='bfgcn':
         # BF-GCN forward accepts precomputed bandpower and PLV, NOT raw EEG.
         return (torch.from_numpy(t._bfgcn_bandpower_features(windows,fs)).to(device),
@@ -101,4 +125,12 @@ def prepare_input(kind,windows,domains,fs,device):
 
 def forward(model,kind,inputs):
     if kind=='bfgcn': return model(*inputs,alpha=0.)[0]
+    if kind=='tahag': return model(inputs[0],None,alpha=0.)[0]
+    if kind=='lsccn': return model(inputs[0])[0]
     return t._forward_logits(model,*inputs)
+
+
+def predictions(model,kind,logits):
+    if kind=='lsccn' and logits.shape[1]==2:
+        return ((logits[:,1]-logits[:,0])>=model.fig7_decision_threshold).astype(np.int64)
+    return logits.argmax(1)

@@ -1,0 +1,11 @@
+{
+  "stew": {
+    "bilstm": "outputs/stew_loso_bilstm",
+    "tahag": "outputs/stew_loso_tahag",
+    "lsccn": "outputs/stew_loso_lsccn"
+  },
+  "eegmat": {
+    "bilstm": "outputs/eegmat_loso_bilstm",
+    "tahag": "outputs/eegmat_loso_tahag"
+  }
+}
