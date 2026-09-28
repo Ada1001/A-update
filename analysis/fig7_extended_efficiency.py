@@ -41,14 +41,18 @@ def check_environment(provenance,args,out):
             if key not in groups:groups[key]=dict(diff,affected_folds=0,example_result=item['result_file'])
             groups[key]['affected_folds']+=1
     differences=list(groups.values())
-    report=dict(passed=not differences,current_environment=env,differences=differences)
+    blockers=[d for d in differences if d['field']!='environment.gpu_uuid']
+    report=dict(passed=not blockers,current_environment=env,differences=differences,
+                blocking_differences=blockers,comparison_policy='same_model_uuid_informational')
     f.write_json(out/'fig7_environment_comparison.json',report)
     if differences:
         print('Environment/protocol differences (previous -> current):',flush=True)
         for d in differences:
             print(f"  {d['field']}: {d['previous']!r} -> {d['current']!r} ({d['affected_folds']} folds)",flush=True)
-        raise ValueError('Environment/protocol mismatch; see '+str(out/'fig7_environment_comparison.json'))
-    print('PASS: all preserved measurement environments and timing parameters match.',flush=True)
+        if blockers:
+            raise ValueError('Environment/protocol mismatch; see '+str(out/'fig7_environment_comparison.json'))
+        print('GPU UUID difference recorded as informational; same-model measurements accepted.',flush=True)
+    print('PASS: measurement environments and timing parameters are compatible.',flush=True)
     return env
 
 

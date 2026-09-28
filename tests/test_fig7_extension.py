@@ -63,6 +63,20 @@ def test_environment_diff_identifies_exact_fields():
     assert ext.environment_differences(signature,env,args)==[dict(field='repeats',previous=1000,current=2000)]
 
 
+def test_uuid_difference_is_recorded_without_blocking(tmp_path,monkeypatch):
+    from argparse import Namespace
+    args=Namespace(device='cpu',threads=1,warmup=100,repeats=1000,eval_batch_size=16)
+    current=dict(gpu='4090',gpu_uuid='new',torch='2.8')
+    monkeypatch.setattr(f,'hardware',lambda device:current)
+    signature=dict(environment=dict(current,gpu_uuid='old'),warmup=100,repeats=1000,eval_batch_size=16)
+    provenance=[dict(signature=signature,result_file='original/result.json')]
+    assert ext.check_environment(provenance,args,tmp_path)==current
+    report=json.loads((tmp_path/'fig7_environment_comparison.json').read_text())
+    assert report['passed'] and report['differences'][0]['field']=='environment.gpu_uuid'
+    signature['environment']['torch']='2.7'
+    with pytest.raises(ValueError,match='mismatch'):ext.check_environment(provenance,args,tmp_path)
+
+
 def test_preserved_measurements_are_read_only_and_corruption_is_rejected(tmp_path):
     runs=[];result_files=[]
     for ds in ['stew','eegmat']:
