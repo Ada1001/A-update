@@ -148,7 +148,7 @@ def plot(frame,out,curves=None,basename='Fig7_extended_efficiency'):
                     # The origin is a display anchor, not an evaluated epoch-zero score.
                     if usable.iloc[0] and float(points.epoch.iloc[0])>0:
                         ax.plot([0,float(points.epoch.iloc[0])],[0,float(y.iloc[0])],
-                                color=colors[method],ls=':',lw=1.,alpha=.8)
+                                color=colors[method],ls='-',lw=1.7 if method=='AGMNet' else 1.2)
                     ax.plot(points.epoch,y,color=colors[method],ls=styles[i],
                             lw=1.7 if method=='AGMNet' else 1.2,label=method)
                     ax.fill_between(points.epoch.to_numpy(),points.ci_low.where(usable).to_numpy()*100,
@@ -179,7 +179,7 @@ def plot(frame,out,curves=None,basename='Fig7_extended_efficiency'):
         footnote=('FP32, batch=1; median latency. BF-GCN / TAHAG / LSCCN preprocessing excluded.\n'
                   'SVM not measured; EEGMAT LSCCN unavailable.')
         if curves is not None:
-            footnote+=' Curves: >=80% fold coverage; descriptive bootstrap intervals.\nDotted origin connectors are visual guides, not measured epoch-zero scores. Historical validation protocols differ.'
+            footnote+=' Curves: >=80% fold coverage; descriptive bootstrap intervals.\nSolid origin connectors are visual guides, not measured epoch-zero scores. Historical validation protocols differ.'
         fig.supxlabel(footnote,fontsize=6.5)
         fig.canvas.draw();renderer=fig.canvas.get_renderer()
         for ax,annotations,points in label_groups:
