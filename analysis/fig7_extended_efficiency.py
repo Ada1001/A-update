@@ -145,14 +145,19 @@ def plot(frame,out,curves=None,basename='Fig7_extended_efficiency'):
                     if points.empty:continue
                     usable=points.eligible.astype(str).str.lower().isin(['true','1'])
                     y=points.mean_val_bacc.where(usable)*100
+                    # The origin is a display anchor, not an evaluated epoch-zero score.
+                    if usable.iloc[0] and float(points.epoch.iloc[0])>0:
+                        ax.plot([0,float(points.epoch.iloc[0])],[0,float(y.iloc[0])],
+                                color=colors[method],ls=':',lw=1.,alpha=.8)
                     ax.plot(points.epoch,y,color=colors[method],ls=styles[i],
                             lw=1.7 if method=='AGMNet' else 1.2,label=method)
                     ax.fill_between(points.epoch.to_numpy(),points.ci_low.where(usable).to_numpy()*100,
                                     points.ci_high.where(usable).to_numpy()*100,color=colors[method],alpha=.07,lw=0)
                 ax.set_xlabel('Epoch');ax.set_ylabel('Source-validation BAcc (%)')
                 eligible=curves[curves.eligible.astype(str).str.lower().isin(['true','1'])]
-                ax.set_xlim(1,max(2,float(eligible.epoch.max())))
-                ax.set_ylim(max(0,float(eligible.ci_low.min())*100-3),min(100,float(eligible.ci_high.max())*100+3))
+                ax.set_xlim(0,max(2,float(eligible.epoch.max())))
+                ax.set_ylim(0,100)
+                ax.set_yticks(np.arange(0,101,20))
                 ax.legend(loc='best',ncol=2,fontsize=6,framealpha=.85)
                 from matplotlib.ticker import MaxNLocator
                 ax.xaxis.set_major_locator(MaxNLocator(integer=True,nbins=6))
@@ -174,7 +179,7 @@ def plot(frame,out,curves=None,basename='Fig7_extended_efficiency'):
         footnote=('FP32, batch=1; median latency. BF-GCN / TAHAG / LSCCN preprocessing excluded.\n'
                   'SVM not measured; EEGMAT LSCCN unavailable.')
         if curves is not None:
-            footnote+=' Curves: real epochs, >=80% fold coverage; descriptive bootstrap intervals.\nHistorical validation protocols differ; curves do not establish comparable adaptation performance.'
+            footnote+=' Curves: >=80% fold coverage; descriptive bootstrap intervals.\nDotted origin connectors are visual guides, not measured epoch-zero scores. Historical validation protocols differ.'
         fig.supxlabel(footnote,fontsize=6.5)
         fig.canvas.draw();renderer=fig.canvas.get_renderer()
         for ax,annotations,points in label_groups:

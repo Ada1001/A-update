@@ -5,3 +5,4 @@
 /.agents
 __pycache__/
 *.py[cod]
+analysis/plot_cross_subject_excel.py
