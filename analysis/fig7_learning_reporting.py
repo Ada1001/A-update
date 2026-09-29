@@ -81,6 +81,65 @@ def collect_runs(original_root,extended_root):
     return runs
 
 
+def plot_loss_history(out, seed=42, replicates=5000):
+    """Plot recorded objectives; never interpolate or append fictitious epoch zero."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import MaxNLocator
+    records=pd.read_csv(out/'fig7_epoch_records.csv')
+    rng=np.random.default_rng(seed)
+    rows=[]
+    for (ds,method),group in records.groupby(['dataset','method']):
+        total=group.fold_id.nunique()
+        for metric in ['train_loss','val_loss']:
+            if metric not in group:
+                raise ValueError('Missing recorded '+metric+': '+ds+' '+method)
+            if not np.isfinite(group[metric]).all():
+                raise ValueError('Missing/non-finite '+metric+': '+ds+' '+method)
+            for epoch,g in group.groupby('epoch'):
+                values=g[metric].to_numpy()
+                draws=values[rng.integers(len(values),size=(replicates,len(values)))].mean(axis=1)
+                lo,hi=np.quantile(draws,[.025,.975])
+                rows.append(dict(dataset=ds,method=method,metric=metric,epoch=epoch,
+                                 mean=values.mean(),ci_low=lo,ci_high=hi,n_folds=len(values),
+                                 total_folds=total,eligible=len(values)>=np.ceil(.8*total)))
+    curves=pd.DataFrame(rows)
+    curves.to_csv(out/'fig7_loss_epochwise.csv',index=False)
+    colors=dict(zip(ext.ORDER,['#777777','#332288','#44AA99','#882255','#4477AA','#AA3377','#228833','#AA9900','#CC6677']))
+    methods=[m for m in ext.ORDER if m not in {'EEGNet','BF-GCN'}]
+    styles=['-', '--', '-.', ':', '--', '-.', '-']
+    with plt.rc_context({'font.family':'DejaVu Sans','font.size':8,'axes.spines.top':False,
+                         'axes.spines.right':False,'pdf.fonttype':42}):
+        fig,axes=plt.subplots(2,2,figsize=(8.2,6.5),layout='constrained')
+        for col,ds in enumerate(['stew','eegmat']):
+            for row,metric in enumerate(['train_loss','val_loss']):
+                ax=axes[row,col]
+                for i,method in enumerate(methods):
+                    g=curves[(curves.dataset==ds)&(curves.method==method)&(curves.metric==metric)].sort_values('epoch')
+                    if g.empty:continue
+                    ax.plot(g.epoch,g['mean'].where(g.eligible),color=colors[method],ls=styles[i],
+                            lw=1.7 if method=='AGMNet' else 1.2,label=method)
+                    ax.fill_between(g.epoch.to_numpy(),g.ci_low.where(g.eligible).to_numpy(),
+                                    g.ci_high.where(g.eligible).to_numpy(),color=colors[method],alpha=.07,lw=0)
+                ax.set_title(f'({"abcd"[row*2+col]}) {ds.upper()}')
+                ax.set_xlabel('Epoch')
+                ax.set_ylabel('Recorded training loss' if row==0 else 'Source-validation loss')
+                ax.set_xlim(left=0)
+                ax.xaxis.set_major_locator(MaxNLocator(integer=True,nbins=6))
+                ax.grid(axis='x',alpha=.18)
+                ax.legend(loc='best',ncol=2,fontsize=6,framealpha=.85)
+        fig.suptitle('Training and source-validation loss',fontsize=11)
+        fig.supxlabel('Real recorded epochs; >=80% fold coverage; descriptive bootstrap intervals.\n'
+                      'Training objectives and evaluation modes can differ between methods; loss magnitudes are not directly comparable.\n'
+                      'No synthetic epoch-zero loss. LOSO folds share training subjects.',fontsize=6.5)
+        for suffix in ['pdf','png']:
+            path=out/f'FigS7_training_validation_loss.{suffix}'
+            fig.savefig(path,dpi=600)
+            print('Saved:',path)
+        plt.close(fig)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--original-results',default='results/fig7_fixed_v2')
@@ -118,7 +177,7 @@ def main():
             h=pd.read_csv(path)
             if 'epoch_metrics.csv'==path.name and (fold/'history.csv').exists():
                 other=pd.read_csv(fold/'history.csv')
-                for col in ['epoch','val_bacc','val_loss']:
+                for col in ['epoch','val_bacc','val_loss','train_loss']:
                     if col in h and col in other and (len(h)!=len(other) or not np.allclose(h[col],other[col],rtol=1e-6,atol=1e-7)):
                         raise ValueError('Conflicting history/epoch_metrics: '+str(fold))
             audits.append(audit_history(run,fold,h,summary))
@@ -148,6 +207,7 @@ def main():
     if args.stage=='all':
         ext.plot(efficiency,out,basename='FigS7_final_performance')
         ext.plot(efficiency,out,curves=curves,basename='Fig7_learning_and_efficiency')
+        plot_loss_history(out,args.seed,args.bootstrap_replicates)
     f.write_json(out/'fig7_reporting_audit.json',dict(stage=args.stage,seed=args.seed,
         curve_methods=CURVE_KINDS,trust_legacy_source_validation=args.trust_legacy_source_validation,
         source_summary_sha256=f.sha(extended/'fig7_efficiency_summary.csv'),
